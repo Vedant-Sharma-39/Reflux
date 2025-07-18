@@ -1,12 +1,14 @@
 #!/bin/bash
-# This script is executed by each Slurm task for the CALIBRATION campaign.
-# It runs a "chunk" of calibration simulations serially.
+# FILE: scripts/run_chunk.sh
+# This script is executed by each Slurm task.
+# It runs a "chunk" of simulations serially by calling the unified worker.
 
 set -euo pipefail
 
 # --- 1. Validate Input Arguments ---
 if [ "$#" -ne 4 ]; then
     echo "Error: Incorrect number of arguments." >&2
+    echo "Usage: $0 <task_file> <output_dir> <project_root> <sims_per_task>"
     exit 1
 fi
 TASK_FILE="$1"
@@ -14,7 +16,7 @@ OUTPUT_DIR="$2"
 PROJECT_ROOT="$3"
 SIMS_PER_TASK="$4"
 
-echo "--- Calibration Worker Chunk ${SLURM_ARRAY_TASK_ID} Started on $(hostname) ---"
+echo "--- Unified Worker Chunk ${SLURM_ARRAY_TASK_ID} Started on $(hostname) ---"
 
 # --- 2. Calculate Simulation Range ---
 START_SIM_NUM=$(( (SLURM_ARRAY_TASK_ID - 1) * SIMS_PER_TASK + 1 ))
@@ -23,8 +25,8 @@ echo "Processing lines ${START_SIM_NUM} to ${END_SIM_NUM} from task file."
 
 # --- 3. Set up Environment ---
 export PYTHONPATH="${PYTHONPATH}:${PROJECT_ROOT}/src"
-# *** THIS IS THE KEY CHANGE: POINT TO THE NEW WORKER ***
-WORKER_SCRIPT="${PROJECT_ROOT}/src/calibration_worker.py"
+# *** THIS IS THE KEY CHANGE: POINT TO THE UNIFIED WORKER ***
+WORKER_SCRIPT="${PROJECT_ROOT}/src/worker.py"
 cd "${PROJECT_ROOT}" || exit 1
 
 TOTAL_LINES_IN_FILE=$(wc -l < "${TASK_FILE}")
@@ -41,7 +43,6 @@ for (( SIM_NUM=START_SIM_NUM; SIM_NUM<=END_SIM_NUM; SIM_NUM++ )); do
         continue
     fi
     
-    # Check for existing result to make the chunk resumable
     TASK_ID_PRECHECK=$(echo "${PARAMS_JSON}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('task_id', 'unknown'))")
     OUTPUT_FILE="${OUTPUT_DIR}/result_${TASK_ID_PRECHECK}.json"
     if [ -f "${OUTPUT_FILE}" ]; then
@@ -49,7 +50,7 @@ for (( SIM_NUM=START_SIM_NUM; SIM_NUM<=END_SIM_NUM; SIM_NUM++ )); do
         continue
     fi
 
-    echo "Running calibration sim for line ${SIM_NUM}..."
+    echo "Running sim for line ${SIM_NUM}..."
     RESULT_JSON=$(python3 "${WORKER_SCRIPT}" --params "${PARAMS_JSON}")
     
     if [ -z "${RESULT_JSON}" ]; then
@@ -62,4 +63,4 @@ for (( SIM_NUM=START_SIM_NUM; SIM_NUM<=END_SIM_NUM; SIM_NUM++ )); do
     echo "${RESULT_JSON}" > "${SAVED_OUTPUT_FILE}"
 done
 
-echo "--- Calibration Worker Chunk ${SLURM_ARRAY_TASK_ID} Finished ---"
+echo "--- Unified Worker Chunk ${SLURM_ARRAY_TASK_ID} Finished ---"
