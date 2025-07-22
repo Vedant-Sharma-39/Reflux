@@ -1,35 +1,25 @@
 # FILE: src/config.py
 # ==============================================================================
 # SINGLE SOURCE OF TRUTH for ALL simulation campaigns.
-#
-# To define a new experiment, add a new entry to the main EXPERIMENTS
-# dictionary. Each experiment needs:
-#
-# - CAMPAIGN_ID: A unique string for naming directories and files.
-# - run_mode: A keyword ('steady_state', 'calibration') that tells the
-#             unified worker (src/worker.py) which simulation logic to run.
-# - HPC_PARAMS: A dictionary of resources needed for each Slurm job.
-# - PARAM_GRID: The universe of all parameter values to be swept.
-# - SIM_SETS: Defines the specific parameter combinations for this experiment.
 # ==============================================================================
 
 import numpy as np
 
 EXPERIMENTS = {
-    # --- Experiment 1: The main phase diagram analysis ---
+    # --- Experiment 1: The main phase diagram analysis for mean mutant fraction ---
     "p1_definitive_v2": {
         "CAMPAIGN_ID": "p1_definitive_v2",
         "run_mode": "steady_state",
         "HPC_PARAMS": {
             "time": "0-08:00:00",
             "mem": "4G",
-            "sims_per_task": 100,  # Good for many short/medium-length sims
+            "sims_per_task": 100,
         },
         "PARAM_GRID": {
             "b_m": [0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.95],
-            "k_total_low": [0.01, 0.02, 0.03, 0.05, 0.07, 0.1],
-            "k_total_mid": [0.15, 0.2, 0.3, 0.5, 0.75],
-            "k_total_high": [1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0, 20.0, 50.0, 100.0],
+            "k_total_low": np.logspace(-2, -1, 6).tolist(),
+            "k_total_mid": np.logspace(-0.82, 0, 5).tolist(),
+            "k_total_high": np.logspace(0.18, 2, 10).tolist(),
             "phi": np.linspace(-1.0, 1.0, 21).tolist(),
             "width_scaling": [32, 64, 128, 256],
         },
@@ -81,7 +71,6 @@ EXPERIMENTS = {
                 "grid_params": {"width": "width_scaling"},
             },
         },
-        # Parameters used by analysis scripts, not the launcher
         "ANALYSIS_PARAMS": {
             "slice_plot_b_m": [0.65, 0.8, 0.95],
             "fitness_cost_plot_f_M": [0.5, 0.75, 0.95],
@@ -93,19 +82,18 @@ EXPERIMENTS = {
         "CAMPAIGN_ID": "calibration_v4_deleterious_focus",
         "run_mode": "calibration",
         "HPC_PARAMS": {
-            "time": "0-12:00:00",  # Calibration runs can be long and have high variance
-            "mem": "2G",  # But they are memory-light
-            "sims_per_task": 50,  # Smaller chunk size is good for high-variance run times
+            "time": "0-12:00:00",
+            "mem": "2G",
+            "sims_per_task": 50,
         },
         "PARAM_GRID": {
-            # Densely sample the deleterious range (b_m < 1)
             "b_m": np.unique(
                 np.concatenate(
                     [
                         np.linspace(0, 0.8, 100),
                         np.linspace(0.80, 0.98, 20),
                         np.linspace(0.985, 0.995, 5),
-                        np.array([1.0]),  # Include the neutral case
+                        np.array([1.0]),
                     ]
                 )
             ).tolist()
@@ -123,12 +111,59 @@ EXPERIMENTS = {
             }
         },
     },
-    # --- Add your next great experiment here! ---
-    # "my_new_experiment": {
-    #     "CAMPAIGN_ID": "a_unique_name_for_folders",
-    #     "run_mode": "some_new_mode", # Requires adding logic to src/worker.py
-    #     "HPC_PARAMS": { ... },
-    #     "PARAM_GRID": { ... },
-    #     "SIM_SETS": { ... },
-    # },
+    # --- Experiment 3: Definitive analysis of spatial structure and criticality ---
+    "spatial_structure_v1": {
+        "CAMPAIGN_ID": "spatial_structure_v1_fm75",
+        "run_mode": "correlation_analysis",
+        "HPC_PARAMS": {
+            "time": "0-12:00:00",
+            "mem": "4G",
+            "sims_per_task": 10,
+        },
+        "PARAM_GRID": {
+            "b_m": [0.5, 0.8, 0.95],
+            "k_total": np.logspace(-2, 2, 20).tolist(),
+        },
+        "SIM_SETS": {
+            "main": {
+                "base_params": {
+                    "width": 256,
+                    "length": 50000,
+                    "phi": -0.5,
+                    "num_replicates": 24,
+                    "warmup_time": 2000.0,
+                    "num_samples": 100,
+                    "sample_interval": 10.0,
+                },
+                "grid_params": {"b_m": "b_m", "k_total": "k_total"},
+            }
+        },
+    },
+    # --- Experiment 4: Refined KPZ Diffusion/Roughening Analysis ---
+    "diffusion_v2_refined": {
+        "CAMPAIGN_ID": "diffusion_v2_refined_neutral",
+        "run_mode": "diffusion",
+        "HPC_PARAMS": {
+            "time": "1-00:00:00",  # Request 1 full day for long runs
+            "mem": "4G",
+            "sims_per_task": 25,
+        },
+        "PARAM_GRID": {
+            "width": [32, 64, 128, 256, 512],
+        },
+        "SIM_SETS": {
+            "main": {
+                "base_params": {
+                    "length": 4096,
+                    "b_m": 1.0,
+                    "k_total": 0.0,
+                    "phi": 0.0,
+                    "initial_mutant_patch_size": 0,
+                    "max_steps": 25_000_000,
+                    "num_replicates": 400,
+                },
+                "grid_params": {"width": "width"},
+            }
+        },
+    },
 }

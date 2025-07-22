@@ -1,7 +1,8 @@
 # scripts/analyze_calibration_results.py
-# [UPGRADED v3] Aggregates raw trajectory data and performs a robust analysis.
-# - Caches aggregation to CSV, with INCREMENTAL updates for new files.
-# - PARALLELIZES the analysis and fitting for each b_m value.
+# [UPGRADED v5] Fixes BrokenPipeError by separating computation from I/O.
+# - Interactive menu for selecting experiment if no command-line argument is given.
+# - Plotting is REMOVED from the parallel worker to ensure stability.
+# - All other features (caching, parallel analysis) are retained.
 
 import os
 import sys
@@ -20,9 +21,9 @@ import ast
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(project_root, "src"))
 try:
-    from config_calibration import CAMPAIGN_ID
+    from config import EXPERIMENTS
 except ImportError:
-    print("Error: Could not import from src/config_calibration.py.")
+    print("FATAL: Could not import EXPERIMENTS from src/config.py.")
     sys.exit(1)
 
 
@@ -31,19 +32,19 @@ def read_json_file(filepath):
     try:
         with open(filepath, "r") as f:
             data = json.load(f)
-            data["source_file"] = os.path.basename(filepath)  # Add source for tracking
+            data["source_file"] = os.path.basename(filepath)
             return data
-    except:
+    except Exception:
         return None
 
 
-# --- [NEW] Multiprocessing Worker for Parallel Analysis ---
+# --- [MODIFIED] Multiprocessing Worker for Parallel Analysis (NO PLOTTING) ---
 def analyze_bm_group(args_tuple):
     """
-    Analyzes all data for a single b_m value. Designed to be run in parallel.
-    Takes a tuple to be compatible with pool.imap.
+    Analyzes all data for a single b_m value. Returns a dictionary of results
+    and data needed for plotting, but DOES NOT create the plot itself.
     """
-    b_m, group_df, output_dir = args_tuple
+    b_m, group_df, _ = args_tuple  # output_dir is no longer needed here
     try:
         num_initial_replicates = group_df["replicate_id"].nunique()
         if num_initial_replicates == 0:
@@ -80,56 +81,46 @@ def analyze_bm_group(args_tuple):
             return None
 
         q_fit, w_fit = reliable_data["q"].values, reliable_data["width"].values
-        slope, intercept, r_val, _, _ = linregress(q_fit, w_fit)
-
+        slope, intercept, _, _, _ = linregress(q_fit, w_fit)
         v_drift = slope / 2.0
 
-        # --- Create and save the plot inside the worker ---
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(
-            avg_trajectory["q"],
-            avg_trajectory["width"],
-            ".",
-            markersize=5,
-            alpha=0.5,
-            color="steelblue",
-            label="Averaged Data (all survivors)",
-        )
-        ax.plot(
-            q_fit,
-            w_fit,
-            ".",
-            markersize=6,
-            color="orangered",
-            label=f"Data for Fit (> {survival_threshold*100:.0f}% survival)",
-        )
-        q_plot_extended = avg_trajectory["q"].values
-        ax.plot(
-            q_plot_extended,
-            intercept + slope * q_plot_extended,
-            "r-",
-            linewidth=2,
-            label=f"Fit (slope={slope:.3f})",
-        )
-        ax.set_title(f"Avg. Sector Shrinkage for $b_m = {b_m}$")
-        ax.set_xlabel("Mean Front Position ($q$)")
-        ax.set_ylabel("⟨Sector Width⟩")
-        ax.legend()
-        ax.grid(True, linestyle="--")
-        plt.savefig(
-            os.path.join(output_dir, f"robust_shrinkage_bm_{b_m:.3f}.png"), dpi=150
-        )
-        plt.close(fig)
-
-        return {"b_m": b_m, "v_drift": v_drift}
+        # Return all data needed for plotting later in the main process
+        return {
+            "b_m": b_m,
+            "v_drift": v_drift,
+            "plot_data": {
+                "avg_trajectory": avg_trajectory.to_dict("list"),
+                "q_fit": q_fit.tolist(),
+                "w_fit": w_fit.tolist(),
+                "slope": slope,
+                "intercept": intercept,
+                "survival_threshold": survival_threshold,
+            },
+        }
     except Exception as e:
         print(f"Error processing b_m={b_m}: {e}")
         return None
 
 
 def main():
+    # --- [MODIFIED] Argument Parsing with Interactive Fallback ---
+    calibration_experiments = [
+        k for k, v in EXPERIMENTS.items() if v.get("run_mode") == "calibration"
+    ]
+    if not calibration_experiments:
+        print(
+            "FATAL: No experiments with `run_mode: 'calibration'` found in src/config.py."
+        )
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
-        description=f"Analyze calibration results for campaign '{CAMPAIGN_ID}'."
+        description="Analyze calibration results for a specified campaign."
+    )
+    parser.add_argument(
+        "experiment_name",
+        nargs="?",  # Make the argument optional
+        help="The name of the calibration experiment to analyze.",
+        choices=calibration_experiments,
     )
     parser.add_argument(
         "--force-reaggregate",
@@ -138,35 +129,49 @@ def main():
     )
     args = parser.parse_args()
 
-    print(f"--- Analyzing Calibration Results for Campaign: {CAMPAIGN_ID} ---")
+    experiment_name = args.experiment_name
+    if not experiment_name:
+        print("Please choose a calibration experiment to analyze:")
+        for i, name in enumerate(calibration_experiments):
+            print(f"  [{i+1}] {name}")
+        try:
+            choice = int(input("Enter number: ")) - 1
+            if 0 <= choice < len(calibration_experiments):
+                experiment_name = calibration_experiments[choice]
+            else:
+                print("Invalid choice.")
+                sys.exit(1)
+        except (ValueError, IndexError):
+            print("Invalid input.")
+            sys.exit(1)
+
+    experiment_config = EXPERIMENTS[experiment_name]
+    CAMPAIGN_ID = experiment_config["CAMPAIGN_ID"]
+
+    print(f"\n--- Analyzing Calibration Results for Campaign: {CAMPAIGN_ID} ---")
+
     results_dir = os.path.join(project_root, "data", CAMPAIGN_ID, "results")
     output_dir = os.path.join(project_root, "data", CAMPAIGN_ID, "analysis")
     os.makedirs(output_dir, exist_ok=True)
-
     cached_df_path = os.path.join(output_dir, "aggregated_raw_data.csv")
 
-    # --- [MODIFIED] Incremental Caching Logic ---
+    # --- Incremental Caching Logic (Unchanged) ---
     all_json_files = {f for f in os.listdir(results_dir) if f.endswith(".json")}
     cached_df = None
-    files_to_process = all_json_files
-
     if not args.force_reaggregate and os.path.exists(cached_df_path):
         print(f"\nLoading existing data from CSV cache: {cached_df_path}")
         cached_df = pd.read_csv(cached_df_path)
         cached_df["trajectory"] = cached_df["trajectory"].apply(ast.literal_eval)
-
-        processed_files = set(cached_df["source_file"])
-        files_to_process = all_json_files - processed_files
+        files_to_process = all_json_files - set(cached_df.get("source_file", []))
         print(f"Found {len(files_to_process)} new JSON files to process.")
     else:
         print("\nCache not found or --force-reaggregate used. Processing all files.")
+        files_to_process = all_json_files
 
     if files_to_process:
-        print(
-            f"Aggregating {len(files_to_process)} JSON files (this may take a while)..."
-        )
+        # ... (Aggregation logic is unchanged and correct) ...
+        print(f"Aggregating {len(files_to_process)} JSON files...")
         filepaths_to_process = [os.path.join(results_dir, f) for f in files_to_process]
-
         with Pool(processes=max(1, cpu_count() - 1)) as pool:
             new_results = list(
                 tqdm(
@@ -189,64 +194,95 @@ def main():
 
         if valid_new_results:
             new_df = pd.DataFrame(valid_new_results)
-            # Combine new data with existing cached data
             results_df = (
                 pd.concat([cached_df, new_df], ignore_index=True)
                 if cached_df is not None
                 else new_df
             )
-
             print(
                 f"Saving updated cache with {len(results_df)} total records to: {cached_df_path}"
             )
             results_df.to_csv(cached_df_path, index=False)
         else:
-            print("No valid new data found. Using existing cache.")
             results_df = cached_df
     else:
-        print("No new files to process. Using existing cache.")
         results_df = cached_df
 
     if results_df is None or results_df.empty:
         print("No data available for analysis. Exiting.")
         return
 
-    # --- [MODIFIED] Parallel Analysis Section ---
+    # --- Parallel Analysis Section ---
     print(
         f"\n--- Performing Parallel Analysis for {results_df['b_m'].nunique()} b_m values ---"
     )
-
-    # Prepare arguments for each parallel task
     analysis_tasks = [
         (b_m, group, output_dir) for b_m, group in results_df.groupby("b_m")
     ]
 
-    drift_velocity_results = []
     with Pool(processes=max(1, cpu_count() - 2)) as pool:
-        # Use tqdm to show progress on the analysis step
         results_iterator = pool.imap_unordered(analyze_bm_group, analysis_tasks)
-        drift_velocity_results = list(tqdm(results_iterator, total=len(analysis_tasks)))
+        analysis_results = list(tqdm(results_iterator, total=len(analysis_tasks)))
 
-    # Filter out any failed tasks
-    valid_dv_results = [res for res in drift_velocity_results if res is not None]
-    if not valid_dv_results:
-        print("\nCould not calculate any drift velocities. No final plot generated.")
+    valid_results = [res for res in analysis_results if res is not None]
+    if not valid_results:
+        print("\nCould not calculate any drift velocities.")
         return
 
-    # --- Final Aggregation and Plotting (in main process) ---
-    calib_df = pd.DataFrame(valid_dv_results)
+    # --- [NEW] Serial Plotting of Individual Fits ---
+    print("\n--- Generating individual fit plots ---")
+    for res in tqdm(valid_results, desc="Plotting fits"):
+        b_m = res["b_m"]
+        p_data = res["plot_data"]
+        avg_traj_df = pd.DataFrame(p_data["avg_trajectory"])
 
-    # 2. Create the new 's' column for the selection coefficient.
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(
+            avg_traj_df["q"],
+            avg_traj_df["width"],
+            ".",
+            markersize=5,
+            alpha=0.5,
+            color="steelblue",
+            label="Averaged Data",
+        )
+        ax.plot(
+            p_data["q_fit"],
+            p_data["w_fit"],
+            ".",
+            markersize=6,
+            color="orangered",
+            label=f"Data for Fit (> {p_data['survival_threshold']*100:.0f}% survival)",
+        )
+        q_plot_extended = np.array(avg_traj_df["q"])
+        ax.plot(
+            q_plot_extended,
+            p_data["intercept"] + p_data["slope"] * q_plot_extended,
+            "r-",
+            linewidth=2,
+            label=f"Fit (slope={p_data['slope']:.3f})",
+        )
+        ax.set_title(f"Avg. Sector Shrinkage for $b_m = {b_m}$")
+        ax.set_xlabel("Mean Front Position ($q$)")
+        ax.set_ylabel("⟨Sector Width⟩")
+        ax.legend()
+        ax.grid(True, linestyle="--")
+        plt.savefig(
+            os.path.join(output_dir, f"robust_shrinkage_bm_{b_m:.3f}.png"), dpi=150
+        )
+        plt.close(fig)
+
+    # --- Final Aggregation and Plotting (Unchanged) ---
+    calib_df = pd.DataFrame(
+        [{"b_m": r["b_m"], "v_drift": r["v_drift"]} for r in valid_results]
+    )
     calib_df["s"] = calib_df["b_m"] - 1.0
-
-    # 3. Now, sort the DataFrame by the 's' column. No need for a complex key.
     calib_df = calib_df.sort_values(by="s", ignore_index=True)
 
     output_csv = os.path.join(output_dir, "calibration_curve_data.csv")
     calib_df.to_csv(output_csv, index=False)
     print(f"\nFinal calibration data saved to {output_csv}")
 
-    # The plotting section also needs a small adjustment to use the new 's' column
     plt.figure(figsize=(8, 6))
     plt.plot(
         calib_df["s"],
@@ -263,7 +299,6 @@ def main():
         alpha=0.8,
         label="Theory ($v_{drift} = s$)",
     )
-
     plt.title("Calibration Curve: Effective Drift vs. Selection")
     plt.xlabel("Selection Coefficient ($s = b_m - 1$)")
     plt.ylabel("Effective Drift Velocity ($v_{drift}$)")
@@ -279,3 +314,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+1

@@ -1,293 +1,202 @@
-# src/metrics.py
-# Contains the metric collection architecture: Manager and Trackers.
+# FILE: src/metrics.py
 
 import numpy as np
 import pandas as pd
 import os
 from abc import ABC, abstractmethod
-from typing import List, TYPE_CHECKING  # <-- IMPORT TYPE_CHECKING
+from typing import List, Tuple, TYPE_CHECKING
 import collections
 from hex_utils import Hex
-from typing import Tuple
 
-# This is the crucial change to break the circular import.
-# The 'if TYPE_CHECKING:' block is only executed by static type checkers (like Mypy),
-# not by the Python interpreter at runtime. This allows us to have the type hint
-# without creating a runtime import dependency cycle.
 if TYPE_CHECKING:
-    from linear_model import GillespieSimulation
-
-
-# Forward declaration for type hinting to avoid circular import at RUNTIME.
-# This is now technically redundant if you use the TYPE_CHECKING block, but
-# it's good practice to keep it as a clear signal of the dependency.
-class GillespieSimulation:
-    pass
+    from linear_model import GillespieSimulation, Wildtype, Mutant
 
 
 class MetricTracker(ABC):
-    """Abstract base class for a metric plugin."""
-
-    def __init__(self, sim: GillespieSimulation):
+    def __init__(self, sim: "GillespieSimulation"):
         self.sim = sim
 
     def initialize(self):
-        """Called by the MetricsManager at the beginning of a run."""
         pass
 
     def after_step_hook(self):
-        """Called by the MetricsManager after each simulation step."""
         pass
 
     def finalize(self):
-        """Called by the MetricsManager at the end of the simulation."""
         pass
-
-
-class FrontDynamicsTracker(MetricTracker):
-    """Tracks and logs front position, roughness, and composition at time intervals."""
-
-    def __init__(self, sim: "GillespieSimulation", log_interval: float = 1.0):
-        super().__init__(sim)
-        self.log_interval = log_interval
-        self.next_log_time = 0.0
-        # Store data in a list of dictionaries for easy conversion to a DataFrame
-        self.history = []
-
-    def after_step_hook(self):
-        if self.sim.time >= self.next_log_time:
-            self.history.append(
-                {
-                    "time": self.sim.time,
-                    "mean_q": self.sim.mean_front_position,
-                    "roughness_q": self.sim.front_roughness_q,
-                    "mutant_fraction": self.sim.mutant_fraction,
-                    "wt_front_cells": len(self.sim.wt_front_cells),
-                    "m_front_cells": len(self.sim.m_front_cells),
-                }
-            )
-            self.next_log_time += self.log_interval
-
-    # --- ADD THIS METHOD ---
-    def get_dataframe(self) -> pd.DataFrame:
-        """Returns the collected history as a Pandas DataFrame."""
-        if not self.history:
-            return pd.DataFrame()  # Return an empty DataFrame if no data was collected
-        return pd.DataFrame(self.history)
-
-    # -----------------------
-
-    # The finalize method is not strictly needed by the runner, but is good to have
-    def finalize(self):
-        """Optional: Can be used to save the data directly from the tracker."""
-        df = self.get_dataframe()
-        if not df.empty:
-            # You could add logic here to save the df to a file if desired
-            print(f"FrontDynamicsTracker finalized with {len(df)} data points.")
-
-
-class FinalStateTracker(MetricTracker):
-    """Saves the final state of the grid and key metadata."""
-
-    def __init__(
-        self,
-        sim: GillespieSimulation,
-        snapshot_filename: str = "final_snapshot.npy",
-        metadata_filename: str = "final_metadata.csv",
-    ):
-        super().__init__(sim)
-        self.snapshot_filename = snapshot_filename
-        self.metadata_filename = metadata_filename
-
-    def finalize(self):
-        # 1. Save the final population grid state as a NumPy array
-        grid_array = np.zeros((self.sim.length, self.sim.width), dtype=np.uint8)
-        for hex_obj, state in self.sim.population.items():
-            col = hex_obj.q
-            row = hex_obj.r + (hex_obj.q + (hex_obj.q & 1)) // 2
-            if 0 <= col < self.sim.length and 0 <= row < self.sim.width:
-                grid_array[col, row] = state
-
-        np.save(self.snapshot_filename, grid_array)
-
-        # 2. Save the final metadata to a CSV
-        final_m_frac = len(self.sim.m_front_cells) / (self.sim.front_cell_count + 1e-9)
-        metadata = {
-            "final_time": [self.sim.time],
-            "final_mean_q": [self.sim.mean_front_position],
-            "final_mutant_fraction": [final_m_frac],
-            "final_wt_front_cells": [len(self.sim.wt_front_cells)],
-            "final_m_front_cells": [len(self.sim.m_front_cells)],
-        }
-        df = pd.DataFrame(metadata)
-        df.to_csv(self.metadata_filename, index=False)
-        print(f"Final state saved: {self.snapshot_filename}, {self.metadata_filename}")
-
-
-import collections
 
 
 class SteadyStateTracker(MetricTracker):
-    """
-    Tracks a simulation metric to determine its steady-state average.
-
-    This tracker is designed for experiments where we want a single, final
-    value from a run, like the average mutant fraction after the system
-    has stabilized.
-    """
-
     def __init__(
-        self,
-        sim: GillespieSimulation,
-        warmup_time: float = 200.0,
-        sample_interval: float = 5.0,
+        self, sim: "GillespieSimulation", warmup_time: float, sample_interval: float
     ):
-        """
-        Args:
-            sim: The simulation instance.
-            warmup_time: How long to run the simulation before starting to
-                         collect samples for the steady-state average.
-            sample_interval: The time interval between collecting samples.
-        """
         super().__init__(sim)
         self.warmup_time = warmup_time
         self.sample_interval = sample_interval
         self.next_sample_time = self.warmup_time
-
-        # Using a deque is efficient for storing a running list of samples
         self.mutant_fraction_samples = collections.deque()
-        self.final_result = None
 
     def after_step_hook(self):
-        """Called after each step to check if it's time to sample."""
         if self.sim.time >= self.next_sample_time:
-            # We are in the sampling period, so record the current mutant fraction
             self.mutant_fraction_samples.append(self.sim.mutant_fraction)
             self.next_sample_time += self.sample_interval
 
     def get_steady_state_mutant_fraction(self) -> float:
-        """
-        Calculates and returns the steady-state average.
-        This should be called *after* the simulation run is complete.
-        """
-        if not self.mutant_fraction_samples:
-            # If the simulation was too short to collect any samples,
-            # return the last known value or NaN.
-            return np.nan
-
-        # The final result is the mean of all collected samples
-        self.final_result = np.mean(self.mutant_fraction_samples)
-        return self.final_result
-
-    def finalize(self):
-        """
-        The finalize step could just print the result for single runs,
-        but the main way to get the data will be via the getter method
-        from the runner script.
-        """
-        avg_rho_M = self.get_steady_state_mutant_fraction()
-        print(f"SteadyStateTracker: Final avg mutant fraction = {avg_rho_M:.4f}")
-        print(
-            f"  (Collected {len(self.mutant_fraction_samples)} samples after time {self.warmup_time})"
+        return (
+            np.mean(self.mutant_fraction_samples)
+            if self.mutant_fraction_samples
+            else np.nan
         )
 
 
 class SectorWidthTracker(MetricTracker):
-    """
-    A MetricTracker specifically designed to track the width of a single
-    mutant sector as a function of the mean front position (q-axis).
+    def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
+        super().__init__(sim)
+        self.capture_interval = capture_interval
+        self.width_trajectory: List[Tuple[float, int]] = []
+        self.next_capture_q = 0.0
 
-    This tracker is intended for calibration runs where k_total=0 and there is
-    an initial mutant patch.
-    """
+    def _get_r_offset(self, cell: Hex) -> int:
+        return cell.r + (cell.q + (cell.q & 1)) // 2
+
+    def after_step_hook(self):
+        mean_q = self.sim.mean_front_position
+        if mean_q < self.next_capture_q:
+            return
+        self.next_capture_q += self.capture_interval
+        mutant_front = self.sim.m_front_cells
+        if not mutant_front:
+            return
+        r_offsets = sorted([self._get_r_offset(cell) for cell in mutant_front])
+        diffs = [r_offsets[i + 1] - r_offsets[i] for i in range(len(r_offsets) - 1)]
+        wrap_diff = (self.sim.width - r_offsets[-1]) + r_offsets[0]
+        diffs.append(wrap_diff)
+        current_width = self.sim.width - (max(diffs) - 1)
+        self.width_trajectory.append((mean_q, current_width))
+
+    def get_trajectory(self) -> List[Tuple[float, int]]:
+        return self.width_trajectory
+
+
+class InterfaceRoughnessTracker(MetricTracker):
+    """Tracks the full interface profile to calculate roughness (W²)."""
 
     def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
         super().__init__(sim)
         self.capture_interval = capture_interval
-        # Stores a list of (mean_front_position, sector_width) tuples
-        self.width_trajectory = []
         self.next_capture_q = 0.0
-
-    def _get_r_offset(self, cell: Hex) -> int:
-        """Helper to convert cube coords back to the transverse r_offset."""
-        return cell.r + (cell.q + (cell.q & 1)) // 2
+        self.roughness_history = []
 
     def after_step_hook(self):
-        """
-        Called after each step. Records the sector width when the front
-        advances past the next capture interval.
-        """
         mean_q = self.sim.mean_front_position
         if mean_q < self.next_capture_q:
             return
-
         self.next_capture_q += self.capture_interval
-
-        mutant_front = self.sim.m_front_cells
-        if not mutant_front:
-            # The sector is extinct, no more data to record for this run.
+        front_cells = self.sim.wt_front_cells.keys()
+        if len(front_cells) < 2:
             return
+        q_values = np.array([cell.q for cell in front_cells])
+        w_squared = np.var(q_values)
+        self.roughness_history.append((mean_q, w_squared))
 
-        # Find the min and max transverse positions (r_offset) of the mutant front
-        r_offsets = sorted([self._get_r_offset(cell) for cell in mutant_front])
-
-        # --- Robust width calculation for periodic boundaries ---
-        # Calculate the differences between successive, sorted r_offsets.
-        # The largest difference is the "gap" in the periodic boundary.
-        diffs = [r_offsets[i + 1] - r_offsets[i] for i in range(len(r_offsets) - 1)]
-
-        # Add the "wrap-around" difference
-        wrap_diff = (self.sim.width - r_offsets[-1]) + r_offsets[0]
-        diffs.append(wrap_diff)
-
-        max_gap = max(diffs)
-
-        # The width is the total simulation width minus the largest gap.
-        # We subtract 1 from the gap because width is inclusive.
-        current_width = self.sim.width - (max_gap - 1)
-
-        self.width_trajectory.append((mean_q, current_width))
-
-    def get_trajectory(self) -> List[Tuple[float, int]]:
-        """Returns the collected trajectory data."""
-        return self.width_trajectory
-
-    def finalize(self):
-        """Prints a summary for a single run."""
-        if self.width_trajectory:
-            final_q, final_w = self.width_trajectory[-1]
-            print(
-                f"SectorWidthTracker: Captured {len(self.width_trajectory)} points. "
-                f"Final state: width={final_w} at q={final_q:.2f}"
-            )
-        else:
-            print(
-                "SectorWidthTracker: No data captured (sector may have been extinct initially)."
-            )
+    def get_roughness_trajectory(self) -> list[tuple[float, float]]:
+        return self.roughness_history
 
 
-class SurvivalTracker(MetricTracker):
-    """
-    A simple tracker for absorbing-state phase transitions.
-    It only records whether the wild-type population is extant at the very end.
-    """
+class FixationTimeTracker(MetricTracker):
+    """Tracks the time until a species (wild-type) is eliminated from the front."""
 
     def __init__(self, sim: "GillespieSimulation"):
         super().__init__(sim)
-        self.wt_survived = 0  # Default to 0 (extinct)
+        self.fixation_time = -1.0  # -1 indicates not yet fixed
 
-    def finalize(self):
-        """Called by the manager at the very end of a run."""
-        if len(self.sim.wt_front_cells) > 0:
-            self.wt_survived = 1
+    def after_step_hook(self):
+        if self.fixation_time < 0 and len(self.sim.wt_front_cells) == 0:
+            self.fixation_time = self.sim.time
+
+    def get_fixation_time(self) -> float:
+        return self.fixation_time
+
+
+class SpatialCorrelationTracker(MetricTracker):
+    def __init__(
+        self,
+        sim: "GillespieSimulation",
+        warmup_time: float,
+        num_samples: int,
+        sample_interval: float,
+    ):
+        super().__init__(sim)
+        self.warmup_time = warmup_time
+        self.num_samples = num_samples
+        self.sample_interval = sample_interval
+        self.next_sample_time = self.warmup_time
+        self.correlation_sum = collections.defaultdict(lambda: [0.0, 0])
+        self.samples_taken = 0
+
+    def _get_spin(self, cell_type: int) -> int:
+        return 1 if cell_type == 1 else -1
+
+    def after_step_hook(self):
+        if (
+            self.samples_taken >= self.num_samples
+            or self.sim.time < self.next_sample_time
+        ):
+            return
+        self._calculate_and_accumulate_g_r()
+        self.samples_taken += 1
+        self.next_sample_time += self.sample_interval
+
+    def _calculate_and_accumulate_g_r(self):
+        front_cells_set = self.sim._front_lookup
+        if len(front_cells_set) < 2:
+            return
+        adj = {
+            cell: [
+                n
+                for n in self.sim._get_neighbors_periodic(cell)
+                if n in front_cells_set
+            ]
+            for cell in front_cells_set
+        }
+        spins = {
+            cell: self._get_spin(self.sim.population[cell]) for cell in front_cells_set
+        }
+        front_cells_list = list(front_cells_set)
+        for i in range(len(front_cells_list)):
+            source_cell = front_cells_list[i]
+            q = collections.deque([source_cell])
+            distance = {source_cell: 0}
+            while q:
+                current_cell = q.popleft()
+                for neighbor in adj[current_cell]:
+                    if neighbor not in distance:
+                        distance[neighbor] = distance[current_cell] + 1
+                        q.append(neighbor)
+            for j in range(i + 1, len(front_cells_list)):
+                target_cell = front_cells_list[j]
+                if target_cell in distance:
+                    dist = distance[target_cell]
+                    product = spins[source_cell] * spins[target_cell]
+                    self.correlation_sum[dist][0] += product
+                    self.correlation_sum[dist][1] += 1
+
+    def get_correlation_function(self) -> List[Tuple[int, float]]:
+        if not self.correlation_sum:
+            return []
+        g_r_list = [
+            (r, total_g / count)
+            for r, (total_g, count) in self.correlation_sum.items()
+            if count > 0
+        ]
+        g_r_list.sort(key=lambda x: x[0])
+        return g_r_list
 
 
 class MetricsManager:
-    """Manages a collection of MetricTracker plugins."""
-
     def __init__(self):
         self.trackers: List[MetricTracker] = []
-        self._sim = None
+        self._sim: "GillespieSimulation" = None
 
     def register_simulation(self, sim: "GillespieSimulation"):
         self._sim = sim
@@ -304,6 +213,5 @@ class MetricsManager:
             tracker.after_step_hook()
 
     def finalize_all(self):
-        """Call to finalize and save data from all trackers."""
         for tracker in self.trackers:
             tracker.finalize()
