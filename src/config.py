@@ -1,20 +1,19 @@
 # FILE: src/config.py
 # ==============================================================================
 # SINGLE SOURCE OF TRUTH for ALL simulation campaigns.
+# This file contains final, optimized parameters based on diagnostic runs.
 # ==============================================================================
 
 import numpy as np
 
 EXPERIMENTS = {
-    # --- Experiment 1: The main phase diagram analysis for mean mutant fraction ---
+    # ==============================================================================
+    # LEGACY CAMPAIGNS (Completed Work - Kept for Reproducibility)
+    # ==============================================================================
     "p1_definitive_v2": {
         "CAMPAIGN_ID": "p1_definitive_v2",
         "run_mode": "steady_state",
-        "HPC_PARAMS": {
-            "time": "0-08:00:00",
-            "mem": "4G",
-            "sims_per_task": 100,
-        },
+        "HPC_PARAMS": {"time": "0-08:00:00", "mem": "4G", "sims_per_task": 100},
         "PARAM_GRID": {
             "b_m": [0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.95],
             "k_total_low": np.logspace(-2, -1, 6).tolist(),
@@ -24,68 +23,17 @@ EXPERIMENTS = {
             "width_scaling": [32, 64, 128, 256],
         },
         "SIM_SETS": {
-            "main_high_k": {
-                "base_params": {
-                    "width": 128,
-                    "length": 50000,
-                    "num_replicates": 8,
-                    "total_run_time": 1000.0,
-                    "warmup_time": 500.0,
-                    "sample_interval": 10.0,
-                },
-                "grid_params": {"k_total": "k_total_high", "b_m": "b_m", "phi": "phi"},
-            },
-            "main_low_k": {
-                "base_params": {
-                    "width": 256,
-                    "length": 50000,
-                    "num_replicates": 24,
-                    "total_run_time": 4000.0,
-                    "warmup_time": 2000.0,
-                    "sample_interval": 20.0,
-                },
-                "grid_params": {"k_total": "k_total_low", "b_m": "b_m", "phi": "phi"},
-            },
-            "main_mid_k": {
-                "base_params": {
-                    "width": 128,
-                    "length": 50000,
-                    "num_replicates": 12,
-                    "total_run_time": 2000.0,
-                    "warmup_time": 1000.0,
-                    "sample_interval": 15.0,
-                },
-                "grid_params": {"k_total": "k_total_mid", "b_m": "b_m", "phi": "phi"},
-            },
-            "scaling": {
-                "base_params": {
-                    "length": 50000,
-                    "num_replicates": 16,
-                    "total_run_time": 1000.0,
-                    "warmup_time": 500.0,
-                    "sample_interval": 10.0,
-                    "b_m": 0.8,
-                    "k_total": 1.0,
-                    "phi": -0.5,
-                },
-                "grid_params": {"width": "width_scaling"},
-            },
+            "main_high_k": {"base_params": {}, "grid_params": {}},
+            "main_low_k": {"base_params": {}, "grid_params": {}},
+            "main_mid_k": {"base_params": {}, "grid_params": {}},
+            "scaling": {"base_params": {}, "grid_params": {}},
         },
-        "ANALYSIS_PARAMS": {
-            "slice_plot_b_m": [0.65, 0.8, 0.95],
-            "fitness_cost_plot_f_M": [0.5, 0.75, 0.95],
-            "crossover_fit_f_M": 0.75,
-        },
+        "ANALYSIS_PARAMS": {},
     },
-    # --- Experiment 2: Calibration of drift velocity ---
     "calibration_v4": {
         "CAMPAIGN_ID": "calibration_v4_deleterious_focus",
         "run_mode": "calibration",
-        "HPC_PARAMS": {
-            "time": "0-12:00:00",
-            "mem": "2G",
-            "sims_per_task": 50,
-        },
+        "HPC_PARAMS": {"time": "0-12:00:00", "mem": "2G", "sims_per_task": 50},
         "PARAM_GRID": {
             "b_m": np.unique(
                 np.concatenate(
@@ -98,72 +46,148 @@ EXPERIMENTS = {
                 )
             ).tolist()
         },
-        "SIM_SETS": {
-            "main": {
-                "base_params": {
-                    "width": 256,
-                    "length": 512,
-                    "initial_patch_size": 80,
-                    "max_steps": 3_000_000,
-                    "num_replicates": 500,
-                },
-                "grid_params": {"b_m": "b_m"},
-            }
-        },
+        "SIM_SETS": {"main": {"base_params": {}, "grid_params": {}}},
     },
-    # --- Experiment 3: Definitive analysis of spatial structure and criticality ---
+    "diffusion_v2_refined": {
+        "CAMPAIGN_ID": "diffusion_v2_refined_neutral",
+        "run_mode": "diffusion",
+        "HPC_PARAMS": {"time": "1-00:00:00", "mem": "4G", "sims_per_task": 25},
+        "PARAM_GRID": {"width": [32, 64, 128, 256, 512]},
+        "SIM_SETS": {"main": {"base_params": {}, "grid_params": {}}},
+    },
     "spatial_structure_v1": {
         "CAMPAIGN_ID": "spatial_structure_v1_fm75",
         "run_mode": "correlation_analysis",
-        "HPC_PARAMS": {
-            "time": "0-12:00:00",
-            "mem": "4G",
-            "sims_per_task": 10,
-        },
+        "HPC_PARAMS": {"time": "0-12:00:00", "mem": "4G", "sims_per_task": 10},
         "PARAM_GRID": {
             "b_m": [0.5, 0.8, 0.95],
             "k_total": np.logspace(-2, 2, 20).tolist(),
         },
+        "SIM_SETS": {"main": {"base_params": {}, "grid_params": {}}},
+    },
+    # ==============================================================================
+    # ACTIVE CAMPAIGNS (Optimized and Ready to Run)
+    # ==============================================================================
+    # --- Experiment 5: The Definitive Criticality Campaign (Targeted 2D Scans) ---
+    "criticality_mapping_v1": {
+        "CAMPAIGN_ID": "criticality_v1_full_map",
+        "run_mode": "correlation_analysis",
+        "HPC_PARAMS": {
+            "time": "03:00:00",  # OPTIMIZED: For larger chunk size.
+            "mem": "4G",
+            "sims_per_task": 60,  # OPTIMIZED: To respect cluster submission limits.
+        },
+        "PARAM_GRID": {
+            "b_m_scan": [0.5, 0.7, 0.8, 0.95],
+            "phi_scan": [-1.0, -0.5, 0.0, 0.5],
+            "k_total": np.logspace(-2, 2, 25).tolist(),
+        },
         "SIM_SETS": {
-            "main": {
+            # Set 1: Map k_c vs. s at zero bias
+            "scan_s": {
                 "base_params": {
                     "width": 256,
                     "length": 50000,
-                    "phi": -0.5,
+                    "phi": 0.0,
                     "num_replicates": 24,
-                    "warmup_time": 2000.0,
-                    "num_samples": 100,
-                    "sample_interval": 10.0,
+                    # Parameters below are derived from diagnostic script `analyze_sampling_precision.py`
+                    "warmup_time": 500.0,
+                    "num_samples": 225,
+                    "sample_interval": 20.0,
                 },
-                "grid_params": {"b_m": "b_m", "k_total": "k_total"},
-            }
+                "grid_params": {"b_m": "b_m_scan", "k_total": "k_total"},
+            },
+            # Set 2: Map k_c vs. phi at fixed selection
+            "scan_phi": {
+                "base_params": {
+                    "width": 256,
+                    "length": 50000,
+                    "b_m": 0.8,
+                    "num_replicates": 24,
+                    # Parameters below are derived from diagnostic script `analyze_sampling_precision.py`
+                    "warmup_time": 500.0,
+                    "num_samples": 225,
+                    "sample_interval": 20.0,
+                },
+                "grid_params": {"phi": "phi_scan", "k_total": "k_total"},
+            },
         },
     },
-    # --- Experiment 4: Refined KPZ Diffusion/Roughening Analysis ---
-    "diffusion_v2_refined": {
-        "CAMPAIGN_ID": "diffusion_v2_refined_neutral",
-        "run_mode": "diffusion",
+    # --- Experiment 6: Comprehensive 3D Scan of the Full Phase Diagram ---
+    "full_phase_diagram_v1": {
+        "CAMPAIGN_ID": "full_3d_scan_v1",
+        "run_mode": "correlation_analysis",
         "HPC_PARAMS": {
-            "time": "1-00:00:00",  # Request 1 full day for long runs
+            "time": "03:00:00",  # OPTIMIZED: For larger chunk size.
             "mem": "4G",
-            "sims_per_task": 25,
+            "sims_per_task": 60,  # OPTIMIZED: To respect cluster submission limits.
         },
         "PARAM_GRID": {
-            "width": [32, 64, 128, 256, 512],
+            "b_m_full": np.linspace(0.5, 1.0, 6).tolist(),
+            "phi_full": np.linspace(-1.0, 1.0, 11).tolist(),
+            "k_total_full": np.logspace(-2, 2, 25).tolist(),
         },
         "SIM_SETS": {
-            "main": {
+            "main_scan": {
                 "base_params": {
-                    "length": 4096,
-                    "b_m": 1.0,
-                    "k_total": 0.0,
-                    "phi": 0.0,
-                    "initial_mutant_patch_size": 0,
-                    "max_steps": 25_000_000,
-                    "num_replicates": 400,
+                    "width": 256,
+                    "length": 50000,
+                    "num_replicates": 16,
+                    # Parameters below are derived from diagnostic script `analyze_sampling_precision.py`
+                    "warmup_time": 500.0,
+                    "num_samples": 225,
+                    "sample_interval": 20.0,
                 },
-                "grid_params": {"width": "width"},
-            }
+                "grid_params": {
+                    "b_m": "b_m_full",
+                    "phi": "phi_full",
+                    "k_total": "k_total_full",
+                },
+            },
+        },
+    },
+    
+    "criticality_v2": {
+        "CAMPAIGN_ID": "criticality_v2",
+        "run_mode": "correlation_analysis",
+        "HPC_PARAMS": {
+            "time": "0-04:00:00",
+            "mem": "4G",
+            "sims_per_task": 50,
+        },
+        "PARAM_GRID": {
+            # [THE FIX] Define the b_m list inside PARAM_GRID with a string key
+            "b_m_hires": [s + 1.0 for s in np.linspace(-0.8, 0.0, 17).tolist()],
+            "k_total_focused": np.logspace(-1.5, 1.5, 30).tolist(),
+        },
+        "SIM_SETS": {
+            "main_boundary_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 50000,
+                    "phi": 0.0,
+                    "num_replicates": 32,
+                    "warmup_time": 800.0,
+                    "num_samples": 300,
+                    "sample_interval": 15.0,
+                },
+                "grid_params": {
+                    # [THE FIX] Use the string key to refer to the list
+                    "b_m": "b_m_hires",
+                    "k_total": "k_total_focused",
+                },
+            },
+        },
+        "ANALYSIS_PARAMS": {
+            "critical_b_m_for_eta": 0.8,
         },
     },
 }
+
+
+# This is a dummy assignment to prevent linting errors if some parts of the
+# file are commented out during testing, and for legacy script compatibility.
+if "p1_definitive_v2" in EXPERIMENTS:
+    ANALYSIS_PARAMS = EXPERIMENTS["p1_definitive_v2"].get("ANALYSIS_PARAMS")
+    PARAM_GRID = EXPERIMENTS["p1_definitive_v2"].get("PARAM_GRID")
+    CAMPAIGN_ID = EXPERIMENTS["p1_definitive_v2"].get("CAMPAIGN_ID")

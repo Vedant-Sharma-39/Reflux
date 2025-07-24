@@ -53,7 +53,7 @@ def main():
         base_params = sim_set["base_params"].copy()
         num_replicates = base_params.pop("num_replicates", 1)
 
-        grid_keys = sim_set["grid_params"].keys()
+        grid_keys = list(sim_set["grid_params"].keys())
         grid_values = [config["PARAM_GRID"][v] for v in sim_set["grid_params"].values()]
         param_combinations = [
             dict(zip(grid_keys, v)) for v in itertools.product(*grid_values)
@@ -61,13 +61,24 @@ def main():
 
         for params in param_combinations:
             for j in range(num_replicates):
-                task_params = {**params, **base_params}
+                task_params = {**base_params, **params}
                 task_params["run_mode"] = RUN_MODE
+                # [FIX] If a param value (like initial_patch_size) is a string,
+                # evaluate it in the context of the task parameters.
+                for p_key, p_val in task_params.items():
+                    if isinstance(p_val, str) and p_key != "run_mode":
+                        try:
+                            # This allows "width" // 2 to work.
+                            task_params[p_key] = eval(p_val, {}, task_params)
+                        except (NameError, TypeError):
+                            # Not an expression, just a string. Keep it.
+                            pass
 
                 # --- [CORRECTED] Task ID Generation Logic ---
                 param_parts = []
-                for k, v in sorted(params.items()):
-                    # THE FIX IS HERE: k.replace('_', '') removes the underscore from 'b_m' to get 'bm'
+                # Use the original grid keys for a stable and predictable order
+                for k in grid_keys:
+                    v = params[k]
                     key_no_underscore = k.replace("_", "")
                     if isinstance(v, float):
                         param_parts.append(f"{key_no_underscore}{v:.3f}")
@@ -81,6 +92,8 @@ def main():
                 else:
                     task_params["task_id"] = f"{set_id}_{param_str}_rep{j:03d}"
 
+                # Add replicate ID to the parameters themselves
+                task_params["replicate_id"] = j
                 all_possible_tasks.append(task_params)
 
     valid_task_ids = {task["task_id"] for task in all_possible_tasks}
@@ -116,6 +129,9 @@ def main():
         # Ensure the task file is empty if all tasks are done
         open(task_list_path, "w").close()
         return
+
+    # Sort tasks by ID to make the task list deterministic
+    missing_tasks.sort(key=lambda t: t["task_id"])
 
     with open(task_list_path, "w") as f:
         for task in missing_tasks:

@@ -2,3 +2,4 @@ __pycache__
 slurm_logs
 data
 range_expansion_walkers
+figures

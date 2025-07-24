@@ -70,7 +70,10 @@ def run_calibration_sim(params):
 
 
 def run_correlation_sim(params):
-    """Corresponds to the "spatial_structure_v1" experiment."""
+    """
+    [UPGRADED] Corresponds to the new 'criticality_mapping_v1' experiment.
+    Now saves g_r, avg_rho_M, and the variance of rho_M.
+    """
     sim = GillespieSimulation(
         width=params["width"],
         length=params["length"],
@@ -80,22 +83,23 @@ def run_correlation_sim(params):
     )
     manager = MetricsManager()
     manager.register_simulation(sim)
+
+    # We now have two trackers running in parallel
     corr_tracker = SpatialCorrelationTracker(
         sim,
         warmup_time=params["warmup_time"],
         num_samples=params["num_samples"],
         sample_interval=params["sample_interval"],
     )
-    manager.add_tracker(corr_tracker)
-
-    # Also track rho_M for potential future use, since it's cheap
     rho_tracker = SteadyStateTracker(
         sim,
         warmup_time=params["warmup_time"],
         sample_interval=params["sample_interval"],
     )
+    manager.add_tracker(corr_tracker)
     manager.add_tracker(rho_tracker)
 
+    # Determine total run time based on the longer of the two tracker needs
     total_run_time = (
         params["warmup_time"]
         + (params["num_samples"] * params["sample_interval"])
@@ -106,11 +110,18 @@ def run_correlation_sim(params):
         if not active:
             break
         manager.after_step()
+
+    # --- [NEW] Collect results from all trackers ---
     correlation_function = corr_tracker.get_correlation_function()
     avg_rho_M = rho_tracker.get_steady_state_mutant_fraction()
+    var_rho_M = rho_tracker.get_steady_state_mutant_variance()
+    num_samples = rho_tracker.get_steady_state_sample_count()
+
     return {
         "g_r": correlation_function,
         "avg_rho_M": avg_rho_M if not np.isnan(avg_rho_M) else -1.0,
+        "var_rho_M": var_rho_M,
+        "num_steady_state_samples": num_samples,
     }
 
 

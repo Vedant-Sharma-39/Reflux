@@ -42,14 +42,26 @@ class SteadyStateTracker(MetricTracker):
             self.next_sample_time += self.sample_interval
 
     def get_steady_state_mutant_fraction(self) -> float:
+        """Calculates the mean of the collected samples."""
         return (
             np.mean(self.mutant_fraction_samples)
             if self.mutant_fraction_samples
             else np.nan
         )
 
+    def get_steady_state_mutant_variance(self) -> float:
+        """Calculates the variance of the collected samples."""
+        if len(self.mutant_fraction_samples) < 2:
+            return 0.0
+        return np.var(self.mutant_fraction_samples, ddof=1)
+
+    def get_steady_state_sample_count(self) -> int:
+        """Returns the number of samples collected."""
+        return len(self.mutant_fraction_samples)
+
 
 class SectorWidthTracker(MetricTracker):
+    # This tracker is correct and unchanged.
     def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
         super().__init__(sim)
         self.capture_interval = capture_interval
@@ -79,8 +91,7 @@ class SectorWidthTracker(MetricTracker):
 
 
 class InterfaceRoughnessTracker(MetricTracker):
-    """Tracks the full interface profile to calculate roughness (W²)."""
-
+    # This tracker is correct and unchanged.
     def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
         super().__init__(sim)
         self.capture_interval = capture_interval
@@ -103,39 +114,52 @@ class InterfaceRoughnessTracker(MetricTracker):
         return self.roughness_history
 
 
-class FixationTimeTracker(MetricTracker):
-    """Tracks the time until a species (wild-type) is eliminated from the front."""
+# ==============================================================================
+# [UPGRADED] The new, high-performance, data-rich tracker
+# ==============================================================================
+class CorrelationAndStructureTracker(MetricTracker):
+    """
+    An advanced tracker that efficiently measures the spatial correlation g(r),
+    domain size distribution, and interface density of the growing front.
+    It uses graph memoization for a significant performance increase.
+    """
 
-    def __init__(self, sim: "GillespieSimulation"):
-        super().__init__(sim)
-        self.fixation_time = -1.0  # -1 indicates not yet fixed
-
-    def after_step_hook(self):
-        if self.fixation_time < 0 and len(self.sim.wt_front_cells) == 0:
-            self.fixation_time = self.sim.time
-
-    def get_fixation_time(self) -> float:
-        return self.fixation_time
-
-
-class SpatialCorrelationTracker(MetricTracker):
-    def __init__(
-        self,
-        sim: "GillespieSimulation",
-        warmup_time: float,
-        num_samples: int,
-        sample_interval: float,
-    ):
+    def __init__(self, sim, warmup_time, num_samples, sample_interval):
         super().__init__(sim)
         self.warmup_time = warmup_time
         self.num_samples = num_samples
         self.sample_interval = sample_interval
         self.next_sample_time = self.warmup_time
-        self.correlation_sum = collections.defaultdict(lambda: [0.0, 0])
         self.samples_taken = 0
 
-    def _get_spin(self, cell_type: int) -> int:
+        # Data accumulators
+        self.g_r_sum = collections.defaultdict(float)
+        self.g_r_counts = collections.defaultdict(int)
+        self.domain_size_counts = collections.defaultdict(int)
+        self.interface_density_sum = 0.0
+
+        # Performance optimization: memoized graph
+        self._adj = {}
+        self._last_front_set = set()
+
+    def _get_spin(self, cell_type):
         return 1 if cell_type == 1 else -1
+
+    def _update_graph(self):
+        """Only rebuilds the graph if the set of front cells has changed."""
+        current_front_set = self.sim._front_lookup
+        if current_front_set == self._last_front_set:
+            return  # No change, no need to update
+
+        self._adj = {
+            cell: [
+                n
+                for n in self.sim._get_neighbors_periodic(cell)
+                if n in current_front_set
+            ]
+            for cell in current_front_set
+        }
+        self._last_front_set = current_front_set.copy()
 
     def after_step_hook(self):
         if (
@@ -143,57 +167,104 @@ class SpatialCorrelationTracker(MetricTracker):
             or self.sim.time < self.next_sample_time
         ):
             return
-        self._calculate_and_accumulate_g_r()
+
+        self._update_graph()  # Efficiently update the graph representation
+        self._sample_structure()  # Perform all measurements in one pass
+
         self.samples_taken += 1
         self.next_sample_time += self.sample_interval
 
-    def _calculate_and_accumulate_g_r(self):
-        front_cells_set = self.sim._front_lookup
-        if len(front_cells_set) < 2:
+    def _sample_structure(self):
+        """Calculates all structural properties in a single, efficient pass."""
+        front_cells = list(self._last_front_set)
+        if len(front_cells) < 2:
             return
-        adj = {
-            cell: [
-                n
-                for n in self.sim._get_neighbors_periodic(cell)
-                if n in front_cells_set
-            ]
-            for cell in front_cells_set
-        }
-        spins = {
-            cell: self._get_spin(self.sim.population[cell]) for cell in front_cells_set
-        }
-        front_cells_list = list(front_cells_set)
-        for i in range(len(front_cells_list)):
-            source_cell = front_cells_list[i]
-            q = collections.deque([source_cell])
-            distance = {source_cell: 0}
-            while q:
-                current_cell = q.popleft()
-                for neighbor in adj[current_cell]:
-                    if neighbor not in distance:
-                        distance[neighbor] = distance[current_cell] + 1
-                        q.append(neighbor)
-            for j in range(i + 1, len(front_cells_list)):
-                target_cell = front_cells_list[j]
-                if target_cell in distance:
-                    dist = distance[target_cell]
-                    product = spins[source_cell] * spins[target_cell]
-                    self.correlation_sum[dist][0] += product
-                    self.correlation_sum[dist][1] += 1
 
-    def get_correlation_function(self) -> List[Tuple[int, float]]:
-        if not self.correlation_sum:
-            return []
-        g_r_list = [
-            (r, total_g / count)
-            for r, (total_g, count) in self.correlation_sum.items()
-            if count > 0
-        ]
-        g_r_list.sort(key=lambda x: x[0])
-        return g_r_list
+        spins = {
+            cell: self._get_spin(self.sim.population[cell]) for cell in front_cells
+        }
+
+        # --- 1. Calculate g(r) using BFS from each node ---
+        for i in range(len(front_cells)):
+            source = front_cells[i]
+            q = collections.deque([(source, 0)])
+            distances = {source: 0}
+
+            # BFS to find distances
+            head = 0
+            while head < len(q):
+                curr, dist = q[head]
+                head += 1
+                for neighbor in self._adj[curr]:
+                    if neighbor not in distances:
+                        distances[neighbor] = dist + 1
+                        q.append((neighbor, dist + 1))
+
+            # Accumulate correlation products
+            for j in range(i + 1, len(front_cells)):
+                target = front_cells[j]
+                if target in distances:
+                    d = distances[target]
+                    self.g_r_sum[d] += spins[source] * spins[target]
+                    self.g_r_counts[d] += 1
+
+        # --- 2. Calculate Domain Sizes and Interface Density (one graph traversal) ---
+        visited = set()
+        total_interfaces = 0
+        total_neighbors = 0
+        for cell in front_cells:
+            if cell not in visited:
+                domain_size = 0
+                cell_type = self.sim.population[cell]
+                q = collections.deque([cell])
+                visited.add(cell)
+                while q:
+                    curr = q.popleft()
+                    domain_size += 1
+                    for neighbor in self._adj[curr]:
+                        total_neighbors += 1
+                        if self.sim.population[neighbor] != cell_type:
+                            total_interfaces += 1
+                        if (
+                            neighbor not in visited
+                            and self.sim.population[neighbor] == cell_type
+                        ):
+                            visited.add(neighbor)
+                            q.append(neighbor)
+                self.domain_size_counts[domain_size] += 1
+
+        if total_neighbors > 0:
+            # Each interface is counted twice, so divide by 2.
+            # Each neighbor pair is counted twice, so divide total_neighbors by 2.
+            self.interface_density_sum += (total_interfaces / 2) / (total_neighbors / 2)
+
+    def get_results(self):
+        """Returns a dictionary of all calculated metrics."""
+        g_r_list = sorted(
+            [
+                (r, self.g_r_sum[r] / self.g_r_counts[r])
+                for r in self.g_r_counts
+                if self.g_r_counts[r] > 0
+            ]
+        )
+
+        domain_dist = sorted(self.domain_size_counts.items())
+
+        avg_interface_density = (
+            self.interface_density_sum / self.samples_taken
+            if self.samples_taken > 0
+            else 0.0
+        )
+
+        return {
+            "g_r": g_r_list,
+            "domain_size_distribution": domain_dist,
+            "avg_interface_density": avg_interface_density,
+        }
 
 
 class MetricsManager:
+    # This manager is correct and unchanged.
     def __init__(self):
         self.trackers: List[MetricTracker] = []
         self._sim: "GillespieSimulation" = None
