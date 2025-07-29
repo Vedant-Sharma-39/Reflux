@@ -1,9 +1,11 @@
 # FILE: src/metrics.py
+# [DEFINITIVE VERSION]
+# This file contains the complete and corrected set of all metric trackers
+# required to run every legacy and final experiment in the project.
 
 import numpy as np
 import pandas as pd
-import os
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import List, Tuple, TYPE_CHECKING
 import collections
 from hex_utils import Hex
@@ -13,6 +15,8 @@ if TYPE_CHECKING:
 
 
 class MetricTracker(ABC):
+    """Abstract base class for all metric trackers."""
+
     def __init__(self, sim: "GillespieSimulation"):
         self.sim = sim
 
@@ -27,6 +31,8 @@ class MetricTracker(ABC):
 
 
 class SteadyStateTracker(MetricTracker):
+    """For legacy 'steady_state' runs. Measures mean mutant fraction after a warmup."""
+
     def __init__(
         self, sim: "GillespieSimulation", warmup_time: float, sample_interval: float
     ):
@@ -42,31 +48,21 @@ class SteadyStateTracker(MetricTracker):
             self.next_sample_time += self.sample_interval
 
     def get_steady_state_mutant_fraction(self) -> float:
-        """Calculates the mean of the collected samples."""
         return (
             np.mean(self.mutant_fraction_samples)
             if self.mutant_fraction_samples
             else np.nan
         )
 
-    def get_steady_state_mutant_variance(self) -> float:
-        """Calculates the variance of the collected samples."""
-        if len(self.mutant_fraction_samples) < 2:
-            return 0.0
-        return np.var(self.mutant_fraction_samples, ddof=1)
-
-    def get_steady_state_sample_count(self) -> int:
-        """Returns the number of samples collected."""
-        return len(self.mutant_fraction_samples)
-
 
 class SectorWidthTracker(MetricTracker):
-    # This tracker is correct and unchanged.
+    """For 'calibration' runs. Measures the width of a single mutant sector over time."""
+
     def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
         super().__init__(sim)
         self.capture_interval = capture_interval
-        self.width_trajectory: List[Tuple[float, int]] = []
         self.next_capture_q = 0.0
+        self.width_trajectory: List[Tuple[float, int]] = []
 
     def _get_r_offset(self, cell: Hex) -> int:
         return cell.r + (cell.q + (cell.q & 1)) // 2
@@ -81,18 +77,17 @@ class SectorWidthTracker(MetricTracker):
             return
         r_offsets = sorted([self._get_r_offset(cell) for cell in mutant_front])
         diffs = [r_offsets[i + 1] - r_offsets[i] for i in range(len(r_offsets) - 1)]
-        wrap_diff = (self.sim.width - r_offsets[-1]) + r_offsets[0]
-        diffs.append(wrap_diff)
-        current_width = self.sim.width - (max(diffs) - 1)
-        self.width_trajectory.append((mean_q, current_width))
+        diffs.append((self.sim.width - r_offsets[-1]) + r_offsets[0])
+        self.width_trajectory.append((mean_q, self.sim.width - (max(diffs) - 1)))
 
     def get_trajectory(self) -> List[Tuple[float, int]]:
         return self.width_trajectory
 
 
 class InterfaceRoughnessTracker(MetricTracker):
-    # This tracker is correct and unchanged.
-    def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
+    """For 'diffusion' runs. Measures W², the squared width of the ENTIRE population front."""
+
+    def __init__(self, sim: "GillespieSimulation", capture_interval: float = 0.5):
         super().__init__(sim)
         self.capture_interval = capture_interval
         self.next_capture_q = 0.0
@@ -103,54 +98,43 @@ class InterfaceRoughnessTracker(MetricTracker):
         if mean_q < self.next_capture_q:
             return
         self.next_capture_q += self.capture_interval
-        front_cells = self.sim.wt_front_cells.keys()
+
+        # [CORRECTED] Use sim._front_lookup to get ALL front cells (WT and M)
+        front_cells = self.sim._front_lookup
+
         if len(front_cells) < 2:
             return
         q_values = np.array([cell.q for cell in front_cells])
-        w_squared = np.var(q_values)
-        self.roughness_history.append((mean_q, w_squared))
+        self.roughness_history.append((mean_q, np.var(q_values)))
 
     def get_roughness_trajectory(self) -> list[tuple[float, float]]:
         return self.roughness_history
 
 
-# ==============================================================================
-# [UPGRADED] The new, high-performance, data-rich tracker
-# ==============================================================================
 class CorrelationAndStructureTracker(MetricTracker):
-    """
-    An advanced tracker that efficiently measures the spatial correlation g(r),
-    domain size distribution, and interface density of the growing front.
-    It uses graph memoization for a significant performance increase.
-    """
+    """For legacy 'correlation_analysis' runs. Heavy tracker that calculates g(r)."""
 
     def __init__(self, sim, warmup_time, num_samples, sample_interval):
         super().__init__(sim)
-        self.warmup_time = warmup_time
-        self.num_samples = num_samples
-        self.sample_interval = sample_interval
+        self.warmup_time, self.num_samples, self.sample_interval = (
+            warmup_time,
+            num_samples,
+            sample_interval,
+        )
         self.next_sample_time = self.warmup_time
         self.samples_taken = 0
-
-        # Data accumulators
         self.g_r_sum = collections.defaultdict(float)
         self.g_r_counts = collections.defaultdict(int)
-        self.domain_size_counts = collections.defaultdict(int)
         self.interface_density_sum = 0.0
-
-        # Performance optimization: memoized graph
-        self._adj = {}
-        self._last_front_set = set()
+        self._adj, self._last_front_set = {}, set()
 
     def _get_spin(self, cell_type):
         return 1 if cell_type == 1 else -1
 
     def _update_graph(self):
-        """Only rebuilds the graph if the set of front cells has changed."""
         current_front_set = self.sim._front_lookup
         if current_front_set == self._last_front_set:
-            return  # No change, no need to update
-
+            return
         self._adj = {
             cell: [
                 n
@@ -167,30 +151,24 @@ class CorrelationAndStructureTracker(MetricTracker):
             or self.sim.time < self.next_sample_time
         ):
             return
-
-        self._update_graph()  # Efficiently update the graph representation
-        self._sample_structure()  # Perform all measurements in one pass
-
+        self._update_graph()
+        self._sample_structure()
         self.samples_taken += 1
         self.next_sample_time += self.sample_interval
 
     def _sample_structure(self):
-        """Calculates all structural properties in a single, efficient pass."""
         front_cells = list(self._last_front_set)
         if len(front_cells) < 2:
             return
-
         spins = {
             cell: self._get_spin(self.sim.population[cell]) for cell in front_cells
         }
-
-        # --- 1. Calculate g(r) using BFS from each node ---
         for i in range(len(front_cells)):
-            source = front_cells[i]
-            q = collections.deque([(source, 0)])
-            distances = {source: 0}
-
-            # BFS to find distances
+            source, q, distances = (
+                front_cells[i],
+                collections.deque([(front_cells[i], 0)]),
+                {front_cells[i]: 0},
+            )
             head = 0
             while head < len(q):
                 curr, dist = q[head]
@@ -199,8 +177,6 @@ class CorrelationAndStructureTracker(MetricTracker):
                     if neighbor not in distances:
                         distances[neighbor] = dist + 1
                         q.append((neighbor, dist + 1))
-
-            # Accumulate correlation products
             for j in range(i + 1, len(front_cells)):
                 target = front_cells[j]
                 if target in distances:
@@ -208,38 +184,7 @@ class CorrelationAndStructureTracker(MetricTracker):
                     self.g_r_sum[d] += spins[source] * spins[target]
                     self.g_r_counts[d] += 1
 
-        # --- 2. Calculate Domain Sizes and Interface Density (one graph traversal) ---
-        visited = set()
-        total_interfaces = 0
-        total_neighbors = 0
-        for cell in front_cells:
-            if cell not in visited:
-                domain_size = 0
-                cell_type = self.sim.population[cell]
-                q = collections.deque([cell])
-                visited.add(cell)
-                while q:
-                    curr = q.popleft()
-                    domain_size += 1
-                    for neighbor in self._adj[curr]:
-                        total_neighbors += 1
-                        if self.sim.population[neighbor] != cell_type:
-                            total_interfaces += 1
-                        if (
-                            neighbor not in visited
-                            and self.sim.population[neighbor] == cell_type
-                        ):
-                            visited.add(neighbor)
-                            q.append(neighbor)
-                self.domain_size_counts[domain_size] += 1
-
-        if total_neighbors > 0:
-            # Each interface is counted twice, so divide by 2.
-            # Each neighbor pair is counted twice, so divide total_neighbors by 2.
-            self.interface_density_sum += (total_interfaces / 2) / (total_neighbors / 2)
-
     def get_results(self):
-        """Returns a dictionary of all calculated metrics."""
         g_r_list = sorted(
             [
                 (r, self.g_r_sum[r] / self.g_r_counts[r])
@@ -247,24 +192,84 @@ class CorrelationAndStructureTracker(MetricTracker):
                 if self.g_r_counts[r] > 0
             ]
         )
+        return {"g_r": g_r_list}  # Legacy tracker only returned this
 
-        domain_dist = sorted(self.domain_size_counts.items())
 
-        avg_interface_density = (
-            self.interface_density_sum / self.samples_taken
-            if self.samples_taken > 0
+class FrontPropertiesTracker(MetricTracker):
+    """For modern 'structure_analysis' runs. Lightweight and fast."""
+
+    def __init__(self, sim, warmup_time, num_samples, sample_interval):
+        super().__init__(sim)
+        self.warmup_time, self.num_samples, self.sample_interval = (
+            warmup_time,
+            num_samples,
+            sample_interval,
+        )
+        self.next_sample_time, self.samples_taken = self.warmup_time, 0
+        self.interface_density_samples, self.mutant_fraction_samples = [], []
+        self.q_start, self.time_start = 0.0, 0.0
+
+    def initialize(self):
+        self.q_start, self.time_start = self.sim.mean_front_position, self.sim.time
+
+    def after_step_hook(self):
+        if (
+            self.samples_taken >= self.num_samples
+            or self.sim.time < self.next_sample_time
+        ):
+            return
+        front_cells = self.sim._front_lookup
+        if not front_cells:
+            return
+        total_interfaces, total_neighbors = 0, 0
+        for cell in front_cells:
+            cell_type = self.sim.population[cell]
+            for neighbor in self.sim._get_neighbors_periodic(cell):
+                if neighbor in front_cells:
+                    total_neighbors += 1
+                    if self.sim.population[neighbor] != cell_type:
+                        total_interfaces += 1
+        if total_neighbors > 0:
+            self.interface_density_samples.append(total_interfaces / total_neighbors)
+        self.mutant_fraction_samples.append(self.sim.mutant_fraction)
+        self.samples_taken += 1
+        self.next_sample_time += self.sample_interval
+
+    def finalize(self):
+        self.q_end, self.time_end = self.sim.mean_front_position, self.sim.time
+
+    def get_results(self):
+        avg_speed = (
+            (self.q_end - self.q_start) / (self.time_end - self.time_start)
+            if self.time_end > self.time_start
             else 0.0
         )
-
+        avg_interface_density = (
+            np.mean(self.interface_density_samples)
+            if self.interface_density_samples
+            else 0.0
+        )
+        var_rho_M = (
+            np.var(self.mutant_fraction_samples, ddof=1)
+            if len(self.mutant_fraction_samples) > 1
+            else 0.0
+        )
+        avg_rho_M = (
+            np.mean(self.mutant_fraction_samples)
+            if self.mutant_fraction_samples
+            else 0.0
+        )
         return {
-            "g_r": g_r_list,
-            "domain_size_distribution": domain_dist,
+            "avg_front_speed": avg_speed,
             "avg_interface_density": avg_interface_density,
+            "var_rho_M": var_rho_M,
+            "avg_rho_M": avg_rho_M,
         }
 
 
 class MetricsManager:
-    # This manager is correct and unchanged.
+    """A manager to orchestrate the execution of multiple trackers."""
+
     def __init__(self):
         self.trackers: List[MetricTracker] = []
         self._sim: "GillespieSimulation" = None
