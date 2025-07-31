@@ -128,7 +128,7 @@ EXPERIMENTS = {
         },
     },
     "criticality_v2": {
-        "CAMPAIGN_ID": "criticality_v2_global_lores",
+        "CAMPAIGN_ID": "criticality_v2",
         "run_mode": "structure_analysis",
         "HPC_PARAMS": {"time": "0-04:00:00", "mem": "4G", "sims_per_task": 50},
         "PARAM_GRID": {
@@ -293,6 +293,173 @@ EXPERIMENTS = {
                     "max_steps": 10_000_000,
                 },
                 "grid_params": {"b_m": "b_m_scan", "width": "width_scan"},
+            }
+        },
+    },
+    "phase1_find_kc_vs_s_coarse": {
+        "CAMPAIGN_ID": "phase1_find_kc_vs_s_coarse",
+        "run_mode": "structure_analysis",
+        "HPC_PARAMS": {
+            "time": "03:00:00",  # 8 hours per job chunk
+            "mem": "4G",
+            "sims_per_task": 35,
+        },
+        "PARAM_GRID": {
+            # Scan across a wide range of selection coefficients.
+            "s_coarse_scan": np.linspace(-0.8, 0.0, 17).tolist(),
+            # [FIX] Define the b_m list here with its own name.
+            "b_m_from_s_scan": [s + 1.0 for s in np.linspace(-0.8, 0.0, 17)],
+            # Run the scan for a few representative, fixed values of switching bias.
+            "phi_representative_slices": [-0.5, 0.0, 0.5],
+            # Use a very broad, logarithmically-spaced scan for the switching rate.
+            "k_total_global_scan": np.logspace(-2.5, 2.5, 50).tolist(),
+        },
+        "SIM_SETS": {
+            "main_scan": {
+                # Standard robust parameters for structure analysis.
+                "base_params": {
+                    "width": 256,
+                    "length": 50000,
+                    "num_replicates": 32,
+                    "warmup_time": 800.0,
+                    "num_samples": 300,
+                    "sample_interval": 15.0,
+                    "initial_condition_type": "mixed",
+                },
+                "grid_params": {
+                    # [FIX] Refer to the b_m list by its string name.
+                    "b_m": "b_m_from_s_scan",
+                    "phi": "phi_representative_slices",
+                    "k_total": "k_total_global_scan",
+                },
+            }
+        },
+    },
+    "phase2_lean_focused_scan": {
+        "CAMPAIGN_ID": "phase2_lean_focused_scan",
+        "run_mode": "structure_analysis",
+        "HPC_PARAMS": {
+            "time": "0-05:00:00",
+            "mem": "4G",
+            "sims_per_task": 80,  # Can increase sims_per_task as total is lower
+        },
+        "PARAM_GRID": {
+            # --- Define s-values for DENSE k_total scans (our "anchor points") ---
+            "s_anchors_dip": [-0.45, -0.3, -0.15, -0.05],
+            "b_m_anchors_dip": [s + 1.0 for s in [-0.45, -0.3, -0.15, -0.05]],
+            "s_anchors_high": [-0.8, -0.6, -0.4, -0.2, 0.0],
+            "b_m_anchors_high": [s + 1.0 for s in [-0.8, -0.6, -0.4, -0.2, 0.0]],
+            # --- Define s-values for SPARSER k_total scans (in-between points) ---
+            "s_interp_dip": [-0.4, -0.35, -0.25, -0.2, -0.1],
+            "b_m_interp_dip": [s + 1.0 for s in [-0.4, -0.35, -0.25, -0.2, -0.1]],
+            "s_interp_high": [-0.7, -0.5, -0.3, -0.1],
+            "b_m_interp_high": [s + 1.0 for s in [-0.7, -0.5, -0.3, -0.1]],
+            # --- Define k_total scans ---
+            "k_total_dense": np.logspace(np.log10(0.08), np.log10(1.0), 40).tolist(),
+            "k_total_sparse": np.logspace(np.log10(0.08), np.log10(1.0), 15).tolist(),
+            # --- Define phi slices ---
+            "phi_slice_neg0p5": [-0.5],
+            "phi_slice_pos0p5": [0.5],
+        },
+        "SIM_SETS": {
+            # === For phi = -0.5 ===
+            "dip_dense_k": {
+                "base_params": {
+                    "num_replicates": 64,
+                    "width": 256,
+                    "length": 50000,
+                    "warmup_time": 800.0,
+                    "num_samples": 300,
+                    "sample_interval": 15.0,
+                    "initial_condition_type": "mixed",
+                },
+                "grid_params": {
+                    "b_m": "b_m_anchors_dip",
+                    "phi": "phi_slice_neg0p5",
+                    "k_total": "k_total_dense",
+                },
+            },
+            "dip_sparse_k": {
+                "base_params": {
+                    "num_replicates": 32,
+                    "width": 256,
+                    "length": 50000,
+                    "warmup_time": 800.0,
+                    "num_samples": 300,
+                    "sample_interval": 15.0,
+                    "initial_condition_type": "mixed",
+                },
+                "grid_params": {
+                    "b_m": "b_m_interp_dip",
+                    "phi": "phi_slice_neg0p5",
+                    "k_total": "k_total_sparse",
+                },
+            },
+            # === For phi = 0.5 ===
+            "high_dense_k": {
+                "base_params": {
+                    "num_replicates": 64,
+                    "width": 256,
+                    "length": 50000,
+                    "warmup_time": 800.0,
+                    "num_samples": 300,
+                    "sample_interval": 15.0,
+                    "initial_condition_type": "mixed",
+                },
+                "grid_params": {
+                    "b_m": "b_m_anchors_high",
+                    "phi": "phi_slice_pos0p5",
+                    "k_total": "k_total_dense",
+                },
+            },
+            "high_sparse_k": {
+                "base_params": {
+                    "num_replicates": 32,
+                    "width": 256,
+                    "length": 50000,
+                    "warmup_time": 800.0,
+                    "num_samples": 300,
+                    "sample_interval": 15.0,
+                    "initial_condition_type": "mixed",
+                },
+                "grid_params": {
+                    "b_m": "b_m_interp_high",
+                    "phi": "phi_slice_pos0p5",
+                    "k_total": "k_total_sparse",
+                },
+            },
+        },
+    },
+    
+    "exp1_front_speed_deleterious_scan": {
+        "CAMPAIGN_ID": "exp1_front_speed_deleterious_scan",
+        "run_mode": "structure_analysis",  # This run_mode collects all necessary metrics
+        "HPC_PARAMS": {"time": "0-04:00:00", "mem": "2G", "sims_per_task": 100},
+        "PARAM_GRID": {
+            # Scan s from neutral (s=0) to strongly deleterious (s=-0.8)
+            "s_deleterious_scan": np.linspace(-0.8, 0.0, 17).tolist(),
+            "b_m_deleterious_scan": [s + 1.0 for s in np.linspace(-0.8, 0.0, 17)],
+            # Use three representative phi slices to see the effect of bias
+            "phi_speed_slices": [-0.5, 0.0, 0.5],
+            # Scan k_total across the full range of transitions
+            "k_total_speed_scan": np.logspace(-2, 2, 25).tolist(),
+        },
+        "SIM_SETS": {
+            "main_scan": {
+                "base_params": {
+                    "width": 128,
+                    "length": 4096,  # Long enough to get a clean speed measurement
+                    "num_replicates": 50,
+                    "warmup_time": 600.0,
+                    "num_samples": 300,
+                    "sample_interval": 12.0,
+                    "initial_condition_type": "mixed",
+                },
+                "grid_params": {
+                    "b_m": "b_m_deleterious_scan",
+                    "phi": "phi_speed_slices",
+                    "k_total": "k_total_speed_scan",
+                },
             }
         },
     },

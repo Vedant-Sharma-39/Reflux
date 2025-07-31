@@ -1,8 +1,13 @@
 # FILE: scripts/analyze_front_morphology.py
 #
-# A clean, high-performance script to analyze the global front morphology as a
-# function of selection 's'. It calculates the KPZ scaling exponents (alpha and beta)
-# for each selection value in parallel.
+# [REWRITTEN & CORRECTED FOR MULTIPROCESSING]
+# This version fixes a common multiprocessing issue by having each worker
+# process load its own required data instead of receiving large DataFrame
+# chunks from the main process. This avoids serialization (pickling) errors
+# and is more memory-efficient.
+#
+# It still calculates KPZ exponents in parallel and includes the optional
+# diagnostic plotting feature.
 
 import os
 import sys
@@ -31,14 +36,13 @@ plt.style.use("seaborn-v0_8-whitegrid")
 
 
 # ==============================================================================
-# 1. DATA LOADING (PARALLEL)
+# STAGE 1: PARALLEL ANALYSIS (CORRECTED WORKER)
 # ==============================================================================
-def read_json_worker(filepath):
-    """Hardened worker for reading a single JSON file."""
+def read_json_worker(filepath: str):
+    """Hardened worker function to read a single JSON file."""
     try:
         with open(filepath, "r") as f:
             data = json.load(f)
-        # Safely parse trajectory string if it exists
         if "roughness_trajectory" in data and isinstance(
             data["roughness_trajectory"], str
         ):
@@ -46,53 +50,41 @@ def read_json_worker(filepath):
                 data["roughness_trajectory"]
             )
         return data
-    except Exception as e:
-        print(
-            f"Warning: Could not process file {os.path.basename(filepath)}. Error: {e}",
-            file=sys.stderr,
-        )
+    except Exception:
         return None
 
 
-def load_and_preprocess_data(campaign_id):
-    """Loads all raw JSON data for a campaign in parallel."""
-    results_dir = os.path.join(project_root, "data", campaign_id, "results")
-    if not os.path.isdir(results_dir):
-        sys.exit(f"Error: Results directory not found at {results_dir}.")
+def analyze_s_value(s_val: float, campaign_id: str, proj_root: str):
+    """
+    [PARALLEL WORKER - CORRECTED]
+    Analyzes a single 's' value. It loads its own data to avoid
+    multiprocessing serialization issues.
+    """
+    try:
+        b_m = s_val + 1.0
+        results_dir = os.path.join(proj_root, "data", campaign_id, "results")
 
-    filepaths = [
-        os.path.join(results_dir, f)
-        for f in os.listdir(results_dir)
-        if f.endswith(".json")
-    ]
-    if not filepaths:
-        sys.exit("Error: No result files found.")
+        # Worker finds its own files based on the s_val it's assigned
+        b_m_str = f"bm{b_m:.3f}"
+        filepaths = [
+            os.path.join(results_dir, f)
+            for f in os.listdir(results_dir)
+            if b_m_str in f and f.endswith(".json")
+        ]
 
-    with Pool(processes=max(1, cpu_count() - 2)) as pool:
-        all_results = list(
-            tqdm(
-                pool.imap_unordered(read_json_worker, filepaths),
-                total=len(filepaths),
-                desc="Loading JSONs",
-            )
+        if not filepaths:
+            return None
+
+        # Load and process only the relevant data
+        group_results = [read_json_worker(fp) for fp in filepaths]
+        group_df = pd.DataFrame(
+            [r for r in group_results if r and r.get("roughness_trajectory")]
         )
 
-    df_raw = pd.DataFrame(
-        [r for r in all_results if r and r.get("roughness_trajectory")]
-    ).dropna(subset=["b_m", "width"])
-    if df_raw.empty:
-        sys.exit("No valid roughness trajectories found in the data.")
+        if group_df.empty:
+            return None
 
-    df_raw["s"] = df_raw["b_m"] - 1.0
-    return df_raw
-
-
-# ==============================================================================
-# 2. ANALYSIS (PARALLEL)
-# ==============================================================================
-def analyze_s_value(s_val, group_df):
-    """[PARALLEL WORKER] Calculates alpha and beta for a single s-value."""
-    try:
+        # --- The rest of the analysis logic is the same as before ---
         long_form_data = []
         for _, row in group_df.iterrows():
             for q, w_sq in row.get("roughness_trajectory", []):
@@ -101,11 +93,10 @@ def analyze_s_value(s_val, group_df):
             return None
 
         df = pd.DataFrame(long_form_data)
-        max_q = df["q"].max()
-        if max_q <= 1:
+        if df.empty or df["q"].max() <= 1:
             return None
 
-        bins = np.logspace(0, np.log10(max_q), 100)
+        bins = np.logspace(0, np.log10(df["q"].max()), 100)
         df["q_bin"] = pd.cut(df["q"], bins)
         avg_df = (
             df.groupby(["L", "q_bin"], observed=True)
@@ -114,8 +105,8 @@ def analyze_s_value(s_val, group_df):
             .reset_index()
         )
 
-        # --- Beta Calculation ---
-        beta_measured = np.nan
+        # Beta Calculation
+        beta_measured, beta_fit_params = np.nan, None
         beta_fit_df = avg_df[avg_df["L"] == avg_df["L"].max()]
         beta_fit_df = beta_fit_df[
             (beta_fit_df["q_mean"] > 10)
@@ -123,13 +114,14 @@ def analyze_s_value(s_val, group_df):
             & (beta_fit_df["W_sq_mean"] > 0)
         ]
         if len(beta_fit_df) > 3:
-            slope, _, _, _, _ = linregress(
+            slope, intercept, _, _, _ = linregress(
                 np.log10(beta_fit_df["q_mean"]), np.log10(beta_fit_df["W_sq_mean"])
             )
             beta_measured = slope / 2.0
+            beta_fit_params = {"slope": slope, "intercept": intercept}
 
-        # --- Alpha Calculation ---
-        alpha_measured = np.nan
+        # Alpha Calculation
+        alpha_measured, alpha_fit_params = np.nan, None
         saturation_data = []
         for l_val, group in avg_df.groupby("L"):
             sat_points = group[group["q_mean"] > 0.8 * group["q_mean"].max()]
@@ -140,79 +132,199 @@ def analyze_s_value(s_val, group_df):
         sat_df = pd.DataFrame(saturation_data)
         sat_df = sat_df[sat_df["W_sat_sq"] > 0]
         if len(sat_df) > 2:
-            slope, _, _, _, _ = linregress(
+            slope, intercept, _, _, _ = linregress(
                 np.log10(sat_df["L"]), np.log10(sat_df["W_sat_sq"])
             )
             alpha_measured = slope / 2.0
+            alpha_fit_params = {"slope": slope, "intercept": intercept}
 
-        return {"s": s_val, "alpha": alpha_measured, "beta": beta_measured}
+        return {
+            "s": s_val,
+            "alpha": alpha_measured,
+            "beta": beta_measured,
+            "plot_data": {
+                "avg_df": avg_df.to_dict(),
+                "sat_df": sat_df.to_dict(),
+                "beta_fit_params": beta_fit_params,
+                "alpha_fit_params": alpha_fit_params,
+            },
+        }
     except Exception as e:
         print(f"Warning: Failed to analyze s={s_val}. Error: {e}", file=sys.stderr)
         return None
 
 
 # ==============================================================================
-# 3. PLOTTING AND MAIN EXECUTION
+# STAGE 2: PLOTTING AND MAIN EXECUTION
 # ==============================================================================
-def plot_summary(df_final, output_dir):
+def generate_debug_plot(s_val: float, plot_data: dict, debug_dir: str):
+    """Generates a detailed 2-panel diagnostic plot for a single 's' value."""
+    # This function is correct but needs to reconstruct DataFrames from dicts
+    avg_df = pd.DataFrame(plot_data["avg_df"])
+    sat_df = pd.DataFrame(plot_data["sat_df"])
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(22, 9), constrained_layout=True)
+    fig.suptitle(f"Front Morphology Fit Diagnosis for s = {s_val:.3f}", fontsize=20)
+
+    # Panel 1: Beta (Growth) Fit
+    colors = plt.cm.viridis(np.linspace(0, 1, avg_df["L"].nunique()))
+    for i, (l_val, group) in enumerate(avg_df.groupby("L")):
+        ax1.plot(
+            group["q_mean"],
+            group["W_sq_mean"],
+            "o",
+            ms=5,
+            color=colors[i],
+            alpha=0.7,
+            label=f"L = {l_val}",
+        )
+
+    if plot_data["beta_fit_params"]:
+        params = plot_data["beta_fit_params"]
+        beta = params["slope"] / 2.0
+        q_fit = np.logspace(1, 2.5, 50)
+        w_fit = (10 ** params["intercept"]) * (q_fit ** params["slope"])
+        ax1.plot(q_fit, w_fit, "r--", lw=2.5, label=f"Fit ($\\beta$={beta:.3f})")
+
+    q_theory = np.array([10, 200])
+    w_theory = 0.5 * q_theory ** (2 * THEORY_BETA)
+    ax1.plot(
+        q_theory, w_theory, "k:", lw=2.5, label=f"Theory ($\\beta$={THEORY_BETA:.2f})"
+    )
+    ax1.set(
+        xscale="log",
+        yscale="log",
+        xlabel="Mean Front Position (q)",
+        ylabel="Squared Interface Width $\\langle W^2 \\rangle$",
+        title="A. Growth Phase Exponent ($\\beta$)",
+    )
+    ax1.legend()
+
+    # Panel 2: Alpha (Saturation) Fit
+    if not sat_df.empty:
+        ax2.plot(
+            sat_df["L"],
+            sat_df["W_sat_sq"],
+            "o",
+            color="navy",
+            ms=10,
+            label="Measured $W^2_{sat}$",
+        )
+        if plot_data["alpha_fit_params"]:
+            params = plot_data["alpha_fit_params"]
+            alpha = params["slope"] / 2.0
+            L_fit = np.array(sorted(sat_df["L"]))
+            w_fit = (10 ** params["intercept"]) * (L_fit ** params["slope"])
+            ax2.plot(L_fit, w_fit, "r--", lw=2.5, label=f"Fit ($\\alpha$={alpha:.3f})")
+        L_theory = np.array([sat_df["L"].min(), sat_df["L"].max()])
+        w_theory = 0.1 * L_theory ** (2 * THEORY_ALPHA)
+        ax2.plot(
+            L_theory,
+            w_theory,
+            "k:",
+            lw=2.5,
+            label=f"Theory ($\\alpha$={THEORY_ALPHA:.2f})",
+        )
+    ax2.set(
+        xscale="log",
+        yscale="log",
+        xlabel="System Width (L)",
+        ylabel="Saturated Squared Width $\\langle W^2_{sat} \\rangle$",
+        title="B. Roughness Exponent ($\\alpha$)",
+    )
+    ax2.legend()
+
+    for ax in (ax1, ax2):
+        ax.grid(True, which="both", ls="--")
+    plot_path = os.path.join(debug_dir, f"debug_morphology_fit_s_{s_val:.4f}.png")
+    plt.savefig(plot_path, dpi=150)
+    plt.close(fig)
+
+
+def plot_summary_results(df_final: pd.DataFrame, figs_dir: str):
     """Generates the final summary plot of exponents vs. selection."""
     fig, axes = plt.subplots(1, 2, figsize=(18, 7), sharey=True)
-    fig.suptitle("Scaling Exponents vs. Selection Coefficient", fontsize=20)
-
+    fig.suptitle("KPZ Scaling Exponents vs. Selection Coefficient", fontsize=20)
     axes[0].plot(
-        df_final["s"], df_final["alpha"], "o-", color="crimson", label="Measured α"
+        df_final["s"],
+        df_final["alpha"],
+        "o-",
+        color="crimson",
+        label="Measured $\\alpha$",
     )
     axes[0].axhline(
-        THEORY_ALPHA, ls="--", color="gray", label=f"KPZ Theory (α={THEORY_ALPHA:.2f})"
+        THEORY_ALPHA,
+        ls="--",
+        color="gray",
+        label=f"KPZ Theory ($\\alpha$={THEORY_ALPHA:.2f})",
     )
     axes[0].set(
-        xlabel="Selection (s)", ylabel="Roughness Exponent (α)", title="α vs. Selection"
+        xlabel="Selection (s)",
+        ylabel="Roughness Exponent ($\\alpha$)",
+        title="A. Roughness Exponent vs. Selection",
     )
-    axes[0].legend()
-
     axes[1].plot(
-        df_final["s"], df_final["beta"], "o-", color="darkblue", label="Measured β"
+        df_final["s"],
+        df_final["beta"],
+        "o-",
+        color="darkblue",
+        label="Measured $\\beta$",
     )
     axes[1].axhline(
-        THEORY_BETA, ls="--", color="gray", label=f"KPZ Theory (β={THEORY_BETA:.2f})"
+        THEORY_BETA,
+        ls="--",
+        color="gray",
+        label=f"KPZ Theory ($\\beta$={THEORY_BETA:.2f})",
     )
     axes[1].set(
-        xlabel="Selection (s)", ylabel="Growth Exponent (β)", title="β vs. Selection"
+        xlabel="Selection (s)",
+        ylabel="Growth Exponent ($\\beta$)",
+        title="B. Growth Exponent vs. Selection",
     )
-    axes[1].legend()
-
     for ax in axes:
+        ax.legend()
         ax.grid(True, which="both", ls="--")
         ax.set_ylim(0, 1.0)
         ax.axvline(0, color="k", lw=0.5, ls="-")
-
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plot_path = os.path.join(output_dir, "Fig_Exponents_vs_Selection.png")
+    plot_path = os.path.join(figs_dir, "Fig_KPZ_Exponents_vs_Selection.png")
     plt.savefig(plot_path, dpi=300)
     plt.close()
-    print(f"Final summary plot saved to {plot_path}")
+    print(f"\nFinal summary plot saved to {plot_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze front morphology vs. selection."
+        description="Analyze front morphology and calculate KPZ exponents."
     )
     parser.add_argument(
         "experiment_name", default="front_morphology_vs_selection", nargs="?"
+    )
+    parser.add_argument(
+        "--generate-debug-plots",
+        action="store_true",
+        help="Generate detailed diagnostic plots for each 's' value.",
     )
     args = parser.parse_args()
 
     config = EXPERIMENTS[args.experiment_name]
     CAMPAIGN_ID = config["CAMPAIGN_ID"]
-    output_dir = os.path.join(project_root, "data", CAMPAIGN_ID, "analysis")
-    os.makedirs(output_dir, exist_ok=True)
+    analysis_dir = os.path.join(project_root, "data", CAMPAIGN_ID, "analysis")
+    figs_dir = os.path.join(project_root, "figures", CAMPAIGN_ID)
+    debug_dir = os.path.join(figs_dir, "debug_morphology_fits")
+    os.makedirs(analysis_dir, exist_ok=True)
+    os.makedirs(figs_dir, exist_ok=True)
+    if args.generate_debug_plots:
+        os.makedirs(debug_dir, exist_ok=True)
+        print(f"Debug plots will be saved to: {debug_dir}")
 
-    # Step 1: Load data
-    df_raw = load_and_preprocess_data(CAMPAIGN_ID)
+    # --- Execute Analysis Pipeline (Corrected) ---
+    # Get the list of s values directly from the config to create tasks.
+    # This is more efficient than scanning all filenames.
+    s_values_to_analyze = [bm - 1.0 for bm in config["PARAM_GRID"]["b_m_scan"]]
+    analysis_tasks = [(s, CAMPAIGN_ID, project_root) for s in s_values_to_analyze]
 
-    # Step 2: Analyze in parallel
     print("\n--- Starting parallel analysis of exponents ---")
-    analysis_tasks = [(s, group) for s, group in df_raw.groupby("s")]
     with Pool(processes=max(1, cpu_count() - 2)) as pool:
         results = list(
             tqdm(
@@ -222,13 +334,30 @@ def main():
             )
         )
 
-    # Step 3: Aggregate, save, and plot
-    df_final = pd.DataFrame([res for res in results if res]).sort_values("s").dropna()
-    summary_path = os.path.join(output_dir, "scaling_exponents_vs_selection.csv")
+    valid_results = [res for res in results if res is not None]
+    if not valid_results:
+        sys.exit("Analysis complete, but no valid exponent data was generated.")
+
+    if args.generate_debug_plots:
+        print("\n--- Generating diagnostic plots ---")
+        for res in tqdm(valid_results, desc="Plotting fits"):
+            generate_debug_plot(res["s"], res["plot_data"], debug_dir)
+
+    df_final = (
+        pd.DataFrame(
+            [
+                {"s": r["s"], "alpha": r["alpha"], "beta": r["beta"]}
+                for r in valid_results
+            ]
+        )
+        .sort_values("s")
+        .dropna()
+    )
+    summary_path = os.path.join(analysis_dir, "kpz_scaling_exponents_summary.csv")
     df_final.to_csv(summary_path, index=False)
     print(f"\nSaved summary of exponents to {summary_path}")
 
-    plot_summary(df_final, output_dir)
+    plot_summary_results(df_final, figs_dir)
 
 
 if __name__ == "__main__":

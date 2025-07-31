@@ -1,9 +1,18 @@
-# FILE: scripts/analyze_criticality_hierarchical.py
+# FILE: scripts/analyze_criticality.py
 #
-# [DEFINITIVE ANALYSIS v32 - FINAL NARRATIVE PLOTS]
-# This is the final version. It implements the refined figure plan, separating
-# the global model validation into its own figure and creating a new "zoom-out" vs.
-# "zoom-in" showcase for the hierarchical method.
+# [DEFINITIVE HIERARCHICAL ANALYSIS - GENERALIZED FOR MULTI-PHI & MULTI-METRIC]
+# This script is the final, primary tool for analyzing the two-phase
+# hierarchical simulation campaigns (e.g., phase1_... and phase2_...).
+#
+# It automatically detects all `phi` slices present in the data and performs
+# the complete hierarchical analysis for each one independently. It runs this
+# analysis for two key metrics:
+#   1. avg_interface_density (spatial order)
+#   2. avg_rho_M (population composition)
+#
+# For each `phi` slice, it generates a full suite of publication-ready figures,
+# including the final comparative susceptibility plot that highlights the
+# decoupling of the two critical points.
 
 import pandas as pd
 import numpy as np
@@ -37,7 +46,6 @@ def read_json_worker(filepath):
 
 
 def aggregate_data(campaign_id, analysis_dir, force_reaggregate=False):
-    # ... (unchanged)
     results_dir = os.path.join(project_root, "data", campaign_id, "results")
     cached_csv_path = os.path.join(analysis_dir, f"{campaign_id}_aggregated_raw.csv")
     if not os.path.isdir(results_dir):
@@ -68,9 +76,11 @@ def aggregate_data(campaign_id, analysis_dir, force_reaggregate=False):
 
 
 def average_metrics(df_raw):
-    # ... (unchanged)
-    group_keys = [k for k in ["b_m", "k_total"] if k in df_raw.columns]
-    agg_dict = {"avg_interface_density": ("avg_interface_density", "mean")}
+    group_keys = [k for k in ["b_m", "phi", "k_total"] if k in df_raw.columns]
+    agg_dict = {
+        "avg_interface_density": ("avg_interface_density", "mean"),
+        "avg_rho_M": ("avg_rho_M", "mean"),
+    }
     final_agg_dict = {k: v for k, v in agg_dict.items() if v[0] in df_raw.columns}
     if not final_agg_dict:
         return pd.DataFrame()
@@ -87,25 +97,28 @@ def analytical_derivative_sigmoid(log_k, A, n, log_kc):
     )
 
 
-def fit_global_parameters_poly(df_global_avg):
-    print("\n--- Stage 1: Learning global plateau behavior ---")
+def fit_global_sigmoid_models(df_global_slice, metric_name):
+    """Generalized function to fit sigmoid models to any metric."""
     plateau_params = []
-    for s_val, group in tqdm(df_global_avg.groupby("s"), desc="Global fits"):
+    for s_val, group in tqdm(
+        df_global_slice.groupby("s"), desc=f"Global fits for {metric_name}", leave=False
+    ):
         if len(group) < 10:
             continue
-        log_k, density = (
-            np.log(group["k_total"].values),
-            group["avg_interface_density"].values,
-        )
-        p0 = [
-            max(density) - min(density),
-            min(density),
-            np.log(group["k_total"].median()),
-            1.0,
-        ]
+        log_k, metric = np.log(group["k_total"].values), group[metric_name].values
         try:
-            popt, _ = curve_fit(sigmoid_model, log_k, density, p0=p0, maxfev=10000)
-            # [THE UPGRADE] Store all fitted parameters for the global susceptibility plot
+            popt, _ = curve_fit(
+                sigmoid_model,
+                log_k,
+                metric,
+                p0=[
+                    max(metric) - min(metric),
+                    min(metric),
+                    np.log(group["k_total"].median()),
+                    1.0,
+                ],
+                maxfev=10000,
+            )
             plateau_params.append(
                 {
                     "s": s_val,
@@ -117,56 +130,52 @@ def fit_global_parameters_poly(df_global_avg):
             )
         except RuntimeError:
             pass
+    if not plateau_params:
+        return None, None, None
     df_plateaus = pd.DataFrame(plateau_params).sort_values("s")
-    poly_A = np.poly1d(np.polyfit(df_plateaus["s"], df_plateaus["A"], 9))
-    poly_B = np.poly1d(np.polyfit(df_plateaus["s"], df_plateaus["B"], 9))
+    poly_deg = min(9, len(df_plateaus) - 2)
+    if poly_deg < 1:
+        return None, None, None
+    poly_A = np.poly1d(np.polyfit(df_plateaus["s"], df_plateaus["A"], poly_deg))
+    poly_B = np.poly1d(np.polyfit(df_plateaus["s"], df_plateaus["B"], poly_deg))
     return poly_A, poly_B, df_plateaus
 
 
-def fit_local_constrained(df_local_avg, model_A, model_B):
-    # ... (unchanged)
-    print("\n--- Stage 2: Performing constrained fit on high-resolution data ---")
+def fit_local_constrained_general(df_local_slice, model_A, model_B, metric_name):
+    """A generalized version of the constrained fitting function."""
 
-    def constrained_sigmoid_model(log_k, log_kc, n, A_fixed, B_fixed):
-        return A_fixed / (1 + np.exp(-n * (log_k - log_kc))) + B_fixed
+    def constrained_sigmoid(log_k, log_kc, n, A, B):
+        return A / (1 + np.exp(-n * (log_k - log_kc))) + B
 
     fit_results = []
-    for s_val, group in tqdm(df_local_avg.groupby("s"), desc="Constrained fits"):
-        if len(group) < 5:
+    for s_val, group in tqdm(
+        df_local_slice.groupby("s"),
+        desc=f"Constrained fits for {metric_name}",
+        leave=False,
+    ):
+        if len(group) < 5 or metric_name not in group.columns:
             continue
         A_fixed, B_fixed = model_A(s_val), model_B(s_val)
-        log_k, density = (
-            np.log(group["k_total"].values),
-            group["avg_interface_density"].values,
-        )
-        p0 = [np.log(group["k_total"].median()), 4.0]
+        log_k, metric_vals = np.log(group["k_total"].values), group[metric_name].values
         try:
             popt, _ = curve_fit(
-                lambda lk, lkc, n: constrained_sigmoid_model(
-                    lk, lkc, n, A_fixed, B_fixed
-                ),
+                lambda lk, lkc, n: constrained_sigmoid(lk, lkc, n, A_fixed, B_fixed),
                 log_k,
-                density,
-                p0=p0,
+                metric_vals,
+                p0=[np.log(group["k_total"].median()), 4.0],
                 maxfev=10000,
             )
             log_kc, n = popt
-            k_smooth = np.logspace(
-                np.log10(group["k_total"].min()), np.log10(group["k_total"].max()), 200
-            )
+            k_min, k_max = group["k_total"].min(), group["k_total"].max()
+            k_smooth = np.logspace(np.log10(k_min * 0.5), np.log10(k_max * 2), 200)
             fit_results.append(
                 {
                     "s": s_val,
                     "k_c_fit": np.exp(log_kc),
                     "k_smooth": k_smooth,
-                    "density_smooth": constrained_sigmoid_model(
-                        np.log(k_smooth), log_kc, n, A_fixed, B_fixed
-                    ),
                     "susceptibility_smooth": analytical_derivative_sigmoid(
                         np.log(k_smooth), A_fixed, n, log_kc
                     ),
-                    "raw_k": group["k_total"].values,
-                    "raw_density": group["avg_interface_density"].values,
                 }
             )
         except RuntimeError:
@@ -177,21 +186,237 @@ def fit_local_constrained(df_local_avg, model_A, model_B):
 # ==============================================================================
 # STAGE 3: PUBLICATION PLOTTING SUITE
 # ==============================================================================
-def plot_annotated_phase_boundary(fit_results, figs_dir):
-    # ... (unchanged)
-    print("  -> Generating Figure 1: The Annotated Phase Boundary...")
-    df_crit = pd.DataFrame(
-        [{"s": res["s"], "k_c_fit": res["k_c_fit"]} for res in fit_results]
-    ).sort_values("s")
+def plot_model_validation(phi_val, df_plateaus, model_A, model_B, figs_dir):
+    print(f"  -> Generating Figure A: Model Validation for phi={phi_val:.2f}...")
+    fig, ax = plt.subplots(figsize=(12, 8))
+    fig.suptitle(
+        f"Learning Global Plateau Models for Interface Density ($\\phi = {phi_val:.2f}$)",
+        fontsize=20,
+    )
+    s_smooth = np.linspace(df_plateaus["s"].min(), df_plateaus["s"].max(), 200)
+    ax.plot(
+        df_plateaus["s"],
+        df_plateaus["A"],
+        "o",
+        c="C0",
+        ms=8,
+        label="Measured Amplitude",
+    )
+    ax.plot(
+        s_smooth, model_A(s_smooth), "-", c="C0", lw=2.5, label="Smooth Poly Fit A(s)"
+    )
+    ax2 = ax.twinx()
+    ax2.plot(
+        df_plateaus["s"],
+        df_plateaus["B"],
+        "s",
+        c="C1",
+        ms=8,
+        markerfacecolor="none",
+        label="Measured Baseline",
+    )
+    ax2.plot(
+        s_smooth, model_B(s_smooth), "--", c="C1", lw=2.5, label="Smooth Poly Fit B(s)"
+    )
+    ax.set(xlabel="Selection (s)", ylabel="Amplitude A (Interface Density)")
+    ax2.set_ylabel("Baseline B (Interface Density)")
+    ax.legend(loc="upper left")
+    ax2.legend(loc="upper right")
+    ax.grid(True, which="both", ls="--")
+    filename = f"Fig_A_Model_Validation_phi_{phi_val:.2f}.png".replace(".", "p")
+    plt.savefig(os.path.join(figs_dir, filename), dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_global_fits_on_data(
+    phi_val, df_global_slice, df_plateaus_density, df_plateaus_rho, figs_dir
+):
+    """Creates a diagnostic plot showing the raw global data overlaid with the fitted sigmoid curves."""
+    print(
+        f"  -> Generating Figure B: Global Data with Fitted Models for phi={phi_val:.2f}..."
+    )
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(24, 9), constrained_layout=True)
+    fig.suptitle(
+        f"Global System Behavior & Model Fits ($\\phi = {phi_val:.2f}$)", fontsize=24
+    )
+    cmap = cm.magma
+    s_vals = sorted(df_global_slice["s"].unique())
+    norm = mcolors.Normalize(vmin=min(s_vals), vmax=max(s_vals))
+
+    if df_plateaus_density is not None:
+        for _, row in df_plateaus_density.iterrows():
+            s_val, color = row["s"], cmap(norm(row["s"]))
+            data_slice = df_global_slice[df_global_slice["s"] == s_val]
+            ax1.plot(
+                data_slice["k_total"],
+                data_slice["avg_interface_density"],
+                "o",
+                ms=5,
+                color=color,
+                alpha=0.6,
+            )
+            k_smooth = np.logspace(-2.5, 2.5, 400)
+            fit_params = (row["A"], row["B"], row["log_kc_global"], row["n_global"])
+            ax1.plot(
+                k_smooth,
+                sigmoid_model(np.log(k_smooth), *fit_params),
+                "-",
+                lw=2,
+                color=color,
+            )
+    ax1.set(
+        xscale="log",
+        xlabel="$k_{total}$",
+        ylabel="Avg. Interface Density",
+        title="A. Spatial Order",
+    )
+
+    if df_plateaus_rho is not None:
+        for _, row in df_plateaus_rho.iterrows():
+            s_val, color = row["s"], cmap(norm(row["s"]))
+            data_slice = df_global_slice[df_global_slice["s"] == s_val]
+            ax2.plot(
+                data_slice["k_total"],
+                data_slice["avg_rho_M"],
+                "o",
+                ms=5,
+                color=color,
+                alpha=0.6,
+            )
+            k_smooth = np.logspace(-2.5, 2.5, 400)
+            fit_params = (row["A"], row["B"], row["log_kc_global"], row["n_global"])
+            ax2.plot(
+                k_smooth,
+                sigmoid_model(np.log(k_smooth), *fit_params),
+                "-",
+                lw=2,
+                color=color,
+            )
+    ax2.set(
+        xscale="log",
+        xlabel="$k_{total}$",
+        ylabel="Avg. Mutant Fraction $\\langle\\rho_M\\rangle$",
+        title="B. Population Composition",
+    )
+
+    for ax in (ax1, ax2):
+        ax.grid(True, which="both", ls="--")
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=[ax1, ax2], aspect=30, pad=0.02)
+    cbar.set_label("Selection (s)")
+    filename = f"Fig_B_Global_Data_and_Fits_phi_{phi_val:.2f}.png".replace(".", "p")
+    plt.savefig(os.path.join(figs_dir, filename), dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_susceptibility_analysis(
+    phi_val,
+    df_plateaus_density,
+    df_plateaus_rho,
+    fit_results_local_density,
+    fit_results_local_rho,
+    figs_dir,
+):
+    print(f"  -> Generating Figure C: Susceptibility Analysis for phi={phi_val:.2f}...")
+    fig, axes = plt.subplots(1, 3, figsize=(32, 8), constrained_layout=True)
+    fig.suptitle(
+        f"Susceptibility Analysis & Precision Measurement of Critical Points ($\\phi = {phi_val:.2f}$)",
+        fontsize=24,
+    )
+    cmap = cm.magma
+
+    s_vals_local = [res["s"] for res in fit_results_local_density]
+    if not s_vals_local:
+        return
+    norm = mcolors.Normalize(vmin=min(s_vals_local), vmax=max(s_vals_local))
+    s_vals_global = sorted(df_plateaus_density["s"].unique())
+    norm_global = mcolors.Normalize(vmin=min(s_vals_global), vmax=max(s_vals_global))
+
+    for _, row in df_plateaus_density.iterrows():
+        k_smooth = np.logspace(-2.5, 2.5, 400)
+        susc = analytical_derivative_sigmoid(
+            np.log(k_smooth), row["A"], row["n_global"], row["log_kc_global"]
+        )
+        axes[0].plot(k_smooth, susc, "-", color=cmap(norm_global(row["s"])))
+    axes[0].set(
+        xscale="log",
+        xlabel="$k_{total}$",
+        ylabel="Susceptibility (Order)",
+        title="A. Susceptibility Landscape (Global)",
+    )
+
+    for res in fit_results_local_density:
+        color = cmap(norm(res["s"]))
+        axes[1].plot(res["k_smooth"], res["susceptibility_smooth"], "-", color=color)
+        peak_idx = np.argmax(res["susceptibility_smooth"])
+        axes[1].plot(
+            res["k_smooth"][peak_idx],
+            res["susceptibility_smooth"][peak_idx],
+            "*",
+            ms=14,
+            color=color,
+            markeredgecolor="black",
+            label="Order $k_c$" if res["s"] == s_vals_local[0] else "",
+        )
+    if fit_results_local_rho:
+        for res in fit_results_local_rho:
+            color = cmap(norm(res["s"]))
+            axes[1].plot(
+                res["k_smooth"],
+                res["susceptibility_smooth"],
+                "--",
+                color=color,
+                alpha=0.7,
+            )
+            peak_idx = np.argmax(res["susceptibility_smooth"])
+            axes[1].plot(
+                res["k_smooth"][peak_idx],
+                res["susceptibility_smooth"][peak_idx],
+                "v",
+                ms=10,
+                color=color,
+                markeredgecolor="white",
+                label="Composition $k_c$" if res["s"] == s_vals_local[0] else "",
+            )
+    axes[1].set(
+        xscale="log",
+        xlabel="$k_{total}$",
+        title="B. Precision Measurement of Critical Points (Local)",
+    )
+    axes[1].legend()
+
+    if df_plateaus_rho is not None:
+        for _, row in df_plateaus_rho.iterrows():
+            k_smooth = np.logspace(-2.5, 2.5, 400)
+            susc = analytical_derivative_sigmoid(
+                np.log(k_smooth), row["A"], row["n_global"], row["log_kc_global"]
+            )
+            axes[2].plot(k_smooth, susc, "-", color=cmap(norm_global(row["s"])))
+    axes[2].set(
+        xscale="log",
+        xlabel="$k_{total}$",
+        ylabel="Susceptibility (Composition)",
+        title="C. Compositional Change Rate",
+    )
+
+    for ax in axes:
+        ax.grid(True, which="both", ls="--")
+    filename = f"Fig_C_Susceptibility_Analysis_phi_{phi_val:.2f}.png".replace(".", "p")
+    plt.savefig(os.path.join(figs_dir, filename), dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_annotated_phase_boundary(phi_val, fit_results, figs_dir):
+    print(
+        f"  -> Generating Figure D: Annotated Phase Boundary for phi={phi_val:.2f}..."
+    )
+    df_crit = pd.DataFrame(fit_results).sort_values("s")
+    if df_crit.empty:
+        return
     fig, ax = plt.subplots(figsize=(12, 8))
     ax.plot(
-        df_crit["s"],
-        df_crit["k_c_fit"],
-        "o-",
-        markersize=8,
-        color="crimson",
-        linewidth=2.5,
-        zorder=10,
+        df_crit["s"], df_crit["k_c_fit"], "o-", ms=8, color="crimson", lw=2.5, zorder=10
     )
     min_kc_idx = df_crit["k_c_fit"].idxmin()
     s_min, kc_min = df_crit.loc[min_kc_idx, "s"], df_crit.loc[min_kc_idx, "k_c_fit"]
@@ -200,185 +425,23 @@ def plot_annotated_phase_boundary(fit_results, figs_dir):
         kc_min,
         "*",
         color="gold",
-        markersize=20,
+        ms=20,
         markeredgecolor="black",
         label="Most Fragile State",
         zorder=11,
     )
-    ax.axvspan(
-        -0.8, -0.22, color="royalblue", alpha=0.1, label="Geometry-Dominated Regime"
-    )
-    ax.axvspan(
-        -0.15, 0.0, color="mediumseagreen", alpha=0.1, label="Drift-Dominated Regime"
-    )
+    ax.axvspan(-0.8, -0.22, color="royalblue", alpha=0.1, label="Geometry-Dominated")
+    ax.axvspan(-0.15, 0.0, color="mediumseagreen", alpha=0.1, label="Drift-Dominated")
     ax.set(
-        xlabel="Selection Coefficient ($s = b_m - 1$)",
+        xlabel="Selection ($s = b_m - 1$)",
         ylabel="Critical Switching Rate ($k_c$)",
-        title="Non-Monotonic Phase Boundary Reveals Three Physical Regimes",
+        title=f"Phase Boundary for $\\phi = {phi_val:.2f}$",
         yscale="log",
     )
     ax.legend(fontsize=12)
     ax.grid(True, which="both", ls="--")
-    plt.savefig(
-        os.path.join(figs_dir, "Fig1_Annotated_Phase_Boundary.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close()
-
-
-def plot_mechanisms_diagnostic(df_crit, df_deff, df_wsat, figs_dir):
-    # ... (unchanged, now becomes Figure 2)
-    print("  -> Generating Figure 2: The Underlying Physical Mechanisms...")
-    fig, axes = plt.subplots(1, 2, figsize=(20, 8), constrained_layout=True)
-    fig.suptitle("Disentangling the Forces Stabilizing the Ordered State", fontsize=24)
-    ax1 = axes[0]
-    ax2 = ax1.twinx()
-    ax1.plot(
-        df_deff["s"],
-        df_deff["d_eff"],
-        "o-",
-        c="darkgreen",
-        markersize=8,
-        label="$D_{eff}$ (Drift Strength)",
-    )
-    ax2.plot(
-        df_crit["s"],
-        df_crit["k_c_fit"],
-        "o--",
-        c="gray",
-        markersize=6,
-        alpha=0.7,
-        label="$k_c$ (for reference)",
-    )
-    ax1.set(
-        xlabel="Selection (s)",
-        ylabel="Effective Diffusion ($D_{eff}$)",
-        title="A. Drift-Dominated Regime",
-    )
-    ax2.set(ylabel="$k_c$ (log scale)", yscale="log")
-    ax1.legend(loc="upper left")
-    ax2.legend(loc="upper right")
-    ax1 = axes[1]
-    ax2 = ax1.twinx()
-    ax1.plot(
-        df_wsat["s"],
-        df_wsat["W_sat"],
-        "o-",
-        c="darkred",
-        markersize=8,
-        label="$W_{sat}$ (Front Roughness)",
-    )
-    ax2.plot(
-        df_crit["s"],
-        df_crit["k_c_fit"],
-        "o--",
-        c="gray",
-        markersize=6,
-        alpha=0.7,
-        label="$k_c$ (for reference)",
-    )
-    ax1.set(
-        xlabel="Selection (s)",
-        ylabel="Saturated Roughness ($W_{sat}$)",
-        title="B. Geometry-Dominated Regime",
-    )
-    ax2.set(ylabel="$k_c$ (log scale)", yscale="log")
-    ax1.legend(loc="upper left")
-    ax2.legend(loc="upper right")
-    for ax in [axes[0], axes[1]]:
-        ax.grid(True, ls="--", alpha=0.6)
-        ax.axvline(0, color="black", lw=0.5)
-    plt.savefig(
-        os.path.join(figs_dir, "Fig2_Mechanisms_Diagnostic.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close()
-
-
-def plot_hierarchical_method_summary(
-    df_plateaus, model_A, model_B, df_global_avg, fit_results_local, figs_dir
-):
-    print("  -> Generating Figure 3: A Showcase of the Analytical Method...")
-    fig, axes = plt.subplots(1, 3, figsize=(28, 8), constrained_layout=True)
-    fig.suptitle(
-        "The Hierarchical Fitting Method: A Robust Path to Precision", fontsize=24
-    )
-    cmap = cm.magma
-
-    # --- Panel A: Learning the Global Model ---
-    s_smooth = np.linspace(df_plateaus["s"].min(), df_plateaus["s"].max(), 200)
-    axes[0].plot(
-        df_plateaus["s"], df_plateaus["A"], "o", c="C0", label="Measured Amplitude"
-    )
-    axes[0].plot(s_smooth, model_A(s_smooth), "-", c="C0", label="Smooth Fit A(s)")
-    ax2 = axes[0].twinx()
-    ax2.plot(
-        df_plateaus["s"],
-        df_plateaus["B"],
-        "s",
-        c="C1",
-        markerfacecolor="none",
-        label="Measured Baseline",
-    )
-    ax2.plot(s_smooth, model_B(s_smooth), "--", c="C1", label="Smooth Fit B(s)")
-    axes[0].set(
-        xlabel="Selection (s)",
-        ylabel="Amplitude A",
-        title="A. Learning Global Plateau Models",
-    )
-    ax2.set_ylabel("Baseline B")
-    axes[0].legend(loc="upper left")
-    ax2.legend(loc="upper right")
-
-    # --- Panel B: Global Susceptibility Landscape ("Zoomed Out") ---
-    s_values_global = sorted(df_global_avg["s"].unique())
-    norm_global = mcolors.Normalize(
-        vmin=min(s_values_global), vmax=max(s_values_global)
-    )
-    for _, row in df_plateaus.iterrows():
-        k_smooth_global = np.logspace(-2, 2, 400)
-        susc = analytical_derivative_sigmoid(
-            np.log(k_smooth_global), row["A"], row["n_global"], row["log_kc_global"]
-        )
-        axes[1].plot(k_smooth_global, susc, "-", color=cmap(norm_global(row["s"])))
-    axes[1].set(
-        xscale="log",
-        xlabel="$k_{total}$",
-        ylabel="Susceptibility (from Model)",
-        title="B. Susceptibility Landscape (Global View)",
-    )
-
-    # --- Panel C: High-Resolution Susceptibility ("Zoomed In") ---
-    s_values_local = [res["s"] for res in fit_results_local]
-    norm_local = mcolors.Normalize(vmin=min(s_values_local), vmax=max(s_values_local))
-    for res in fit_results_local:
-        color = cmap(norm_local(res["s"]))
-        axes[2].plot(res["k_smooth"], res["susceptibility_smooth"], "-", color=color)
-        peak_idx = np.argmax(res["susceptibility_smooth"])
-        axes[2].plot(
-            res["k_smooth"][peak_idx],
-            res["susceptibility_smooth"][peak_idx],
-            "*",
-            ms=10,
-            color=color,
-            markeredgecolor="black",
-        )
-    axes[2].set(
-        xscale="log",
-        xlabel="$k_{total}$",
-        ylabel="Susceptibility (from Model)",
-        title="C. Precision Measurement of $k_c$ (Local View)",
-    )
-
-    for ax in axes:
-        ax.grid(True, which="both", ls="--")
-    plt.savefig(
-        os.path.join(figs_dir, "Fig3_Hierarchical_Method_Showcase.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
+    filename = f"Fig_D_Phase_Boundary_phi_{phi_val:.2f}.png".replace(".", "p")
+    plt.savefig(os.path.join(figs_dir, filename), dpi=300, bbox_inches="tight")
     plt.close()
 
 
@@ -386,73 +449,102 @@ def plot_hierarchical_method_summary(
 # MAIN EXECUTION
 # ==============================================================================
 def main():
-    GLOBAL_EXP, LOCAL_EXP = "criticality_v2", "criticality_v3"
-    BOUNDARY_EXP, MORPHOLOGY_EXP = (
-        "calibration_boundary_dynamics_v1",
-        "calibration_front_morphology_v1",
+    parser = argparse.ArgumentParser(
+        description="Run generalized hierarchical analysis for multiple phi-slices."
     )
-    FIGS_DIR = os.path.join(project_root, "figures", "FINAL_PUBLICATION_SUITE")
+    parser.add_argument("global_exp", help="Name of the global (coarse) experiment.")
+    parser.add_argument("focused_exp", help="Name of the focused (fine) experiment.")
+    args = parser.parse_args()
+
+    global_config, focused_config = (
+        EXPERIMENTS[args.global_exp],
+        EXPERIMENTS[args.focused_exp],
+    )
+    FIGS_DIR = os.path.join(
+        project_root,
+        "figures",
+        f"hierarchical_analysis_{focused_config['CAMPAIGN_ID']}",
+    )
+    ANALYSIS_DIR = os.path.join(
+        project_root, "data", f"hierarchical_analysis_{focused_config['CAMPAIGN_ID']}"
+    )
     os.makedirs(FIGS_DIR, exist_ok=True)
+    os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
-    print("\n--- Loading all available datasets ---")
-    local_analysis_dir = os.path.join(
-        project_root, "data", EXPERIMENTS[LOCAL_EXP]["CAMPAIGN_ID"], "analysis"
-    )
-    os.makedirs(local_analysis_dir, exist_ok=True)
-    df_global_raw = aggregate_data(
-        EXPERIMENTS[GLOBAL_EXP]["CAMPAIGN_ID"], local_analysis_dir
-    )
-    df_local_raw = aggregate_data(
-        EXPERIMENTS[LOCAL_EXP]["CAMPAIGN_ID"], local_analysis_dir
-    )
-    if df_global_raw is None or df_local_raw is None:
-        sys.exit("FATAL: Core criticality data is missing.")
-
-    df_deff, df_wsat = None, None
-    try:
-        boundary_analysis_dir = os.path.join(
-            project_root, "data", EXPERIMENTS[BOUNDARY_EXP]["CAMPAIGN_ID"], "analysis"
-        )
-        df_deff = pd.read_csv(
-            os.path.join(boundary_analysis_dir, "boundary_dynamics_summary.csv")
-        )
-    except (KeyError, FileNotFoundError):
-        print("[WARNING] Boundary dynamics data not found.")
-    try:
-        morphology_analysis_dir = os.path.join(
-            project_root, "data", EXPERIMENTS[MORPHOLOGY_EXP]["CAMPAIGN_ID"], "analysis"
-        )
-        df_wsat = pd.read_csv(
-            os.path.join(morphology_analysis_dir, "front_morphology_summary.csv")
-        )
-    except (KeyError, FileNotFoundError):
-        print("[WARNING] Front morphology data not found.")
+    df_global_raw = aggregate_data(global_config["CAMPAIGN_ID"], ANALYSIS_DIR)
+    df_focused_raw = aggregate_data(focused_config["CAMPAIGN_ID"], ANALYSIS_DIR)
+    if df_global_raw is None or df_focused_raw is None:
+        sys.exit("FATAL: One or both required datasets are missing.")
 
     df_global_avg = average_metrics(df_global_raw)
     df_global_avg["s"] = df_global_avg["b_m"] - 1.0
-    df_local_avg = average_metrics(df_local_raw)
-    df_local_avg["s"] = df_local_avg["b_m"] - 1.0
+    df_focused_avg = average_metrics(df_focused_raw)
+    df_focused_avg["s"] = df_focused_avg["b_m"] - 1.0
 
-    model_A, model_B, df_plateaus = fit_global_parameters_poly(df_global_avg)
-    fit_results_local = fit_local_constrained(df_local_avg, model_A, model_B)
-    if not fit_results_local:
-        sys.exit("FATAL: Hierarchical analysis failed.")
+    phi_slices = sorted(df_global_avg["phi"].unique())
 
-    print("\n--- Generating Publication-Ready Plot Suite ---")
-    plot_annotated_phase_boundary(fit_results_local, FIGS_DIR)
-    plot_hierarchical_method_summary(
-        df_plateaus, model_A, model_B, df_global_avg, fit_results_local, FIGS_DIR
-    )
-    if df_deff is not None and df_wsat is not None:
-        df_crit = pd.DataFrame(
-            [{"s": res["s"], "k_c_fit": res["k_c_fit"]} for res in fit_results_local]
+    for phi in phi_slices:
+        print(f"\n{'='*20} Analyzing slice: phi = {phi:.2f} {'='*20}")
+        global_slice = df_global_avg[df_global_avg["phi"] == phi].copy()
+        focused_slice = df_focused_avg[df_focused_avg["phi"] == phi].copy()
+
+        if global_slice.empty or focused_slice.empty:
+            continue
+
+        print("\n--- Stage 1: Learning global models ---")
+        model_A_density, model_B_density, df_plateaus_density = (
+            fit_global_sigmoid_models(global_slice, "avg_interface_density")
         )
-        plot_mechanisms_diagnostic(df_crit, df_deff, df_wsat, FIGS_DIR)
-    else:
-        print("[INFO] Skipping mechanisms plot due to missing diagnostic data.")
+        model_A_rho, model_B_rho, df_plateaus_rho = fit_global_sigmoid_models(
+            global_slice, "avg_rho_M"
+        )
+
+        if model_A_density is None:
+            print("  -> Skipping: could not learn global models for interface density.")
+            continue
+
+        print("\n--- Stage 2: Performing constrained fit on high-resolution data ---")
+        fit_results_local_density = fit_local_constrained_general(
+            focused_slice, model_A_density, model_B_density, "avg_interface_density"
+        )
+        fit_results_local_rho = None
+        if model_A_rho is not None:
+            fit_results_local_rho = fit_local_constrained_general(
+                focused_slice, model_A_rho, model_B_rho, "avg_rho_M"
+            )
+
+        if not fit_results_local_density:
+            print(
+                "  -> Skipping: could not perform high-resolution constrained fits for density."
+            )
+            continue
+
+        print("\n--- Stage 3: Generating Publication-Ready Plot Suite ---")
+        plot_model_validation(
+            phi, df_plateaus_density, model_A_density, model_B_density, FIGS_DIR
+        )
+        plot_global_fits_on_data(
+            phi, global_slice, df_plateaus_density, df_plateaus_rho, FIGS_DIR
+        )
+        plot_susceptibility_analysis(
+            phi,
+            df_plateaus_density,
+            df_plateaus_rho,
+            fit_results_local_density,
+            fit_results_local_rho,
+            FIGS_DIR,
+        )
+        plot_annotated_phase_boundary(phi, fit_results_local_density, FIGS_DIR)
 
     print(f"\n--- Analysis Complete. Final figures saved to: {FIGS_DIR} ---")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}", file=sys.stderr)
+        import traceback
+
+        traceback.print_exc()
+        sys.exit(1)
