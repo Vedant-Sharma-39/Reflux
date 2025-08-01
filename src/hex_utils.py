@@ -1,4 +1,4 @@
-# hex_utils.py
+# FILE: src/hex_utils.py
 # A robust, self-contained library for hexagonal grid math and high-quality visualization.
 
 import numpy as np
@@ -62,51 +62,47 @@ class HexPlotter:
         self.labels = labels if labels is not None else {}
         self.fig.set_facecolor("#f0f0f0")
 
-    def _hex_to_cartesian(self, hex_obj):
+    def hex_to_cartesian(self, hex_obj: Hex) -> tuple[float, float]:
+        """
+        [PUBLIC METHOD] Converts a Hex object's cube coordinates to Cartesian (x, y) coordinates.
+        This is now public to allow external scripts to align visualizations.
+        """
         x = self.size * (3.0 / 2.0 * hex_obj.q)
         y = self.size * (np.sqrt(3) / 2.0 * hex_obj.q + np.sqrt(3) * hex_obj.r)
         return x, y
 
-    # In HexPlotter class, replace the plot_population method
-
     def plot_population(self, population, title="", wt_front=None, m_front=None):
         """
-        [MODIFIED] Plots the population, with optional highlighting for front cells.
-
-        Args:
-            population (dict): The main dictionary of {Hex: state}.
-            title (str): The plot title.
-            wt_front (set or dict): A set/dict of wild-type front cells.
-            m_front (set or dict): A set/dict of mutant front cells.
+        Plots the population, with optional highlighting for front cells.
         """
-        self.ax.clear()
-        self.ax.set_facecolor("#f0f0f0")
+        # On replots, we don't clear the axis by default to allow drawing backgrounds first.
+        # The debug script will call ax.clear() manually before plotting.
 
-        # To avoid passing empty lists, default to empty sets
+        # Default to empty sets to avoid errors with None
         wt_front = wt_front or set()
         m_front = m_front or set()
 
         patches, facecolors, edgecolors, linewidths = [], [], [], []
 
         for hex_obj, value in population.items():
-            center_x, center_y = self._hex_to_cartesian(hex_obj)
+            # --- INTERNAL CALL UPDATED ---
+            center_x, center_y = self.hex_to_cartesian(hex_obj)
+
             hexagon = RegularPolygon(
                 (center_x, center_y),
                 numVertices=6,
-                radius=self.size * (1 / np.sqrt(3)) * 0.98,
+                radius=self.size * (1 / np.sqrt(3)) * 0.98,  # Small gap between hexes
                 orientation=np.radians(0),
             )
             patches.append(hexagon)
             facecolors.append(self.colormap.get(value, "#FFFFFF"))
 
-            # --- Highlighting Logic ---
+            # Highlighting logic for front cells
             if hex_obj in wt_front or hex_obj in m_front:
-                # This is a front cell
-                edgecolors.append("#FF0000")  # Bright red edge
-                linewidths.append(0.5)  # Make it thicker
+                edgecolors.append("#FF0000")  # Bright red edge for front cells
+                linewidths.append(0.5)  # Thicker edge
             else:
-                # This is a bulk cell
-                edgecolors.append("#202020")  # Standard dark edge
+                edgecolors.append("#202020")  # Standard dark edge for bulk cells
                 linewidths.append(0.15)
 
         collection = PatchCollection(
@@ -121,13 +117,12 @@ class HexPlotter:
         plt.draw()
 
     def add_legend(self):
-        """Creates and adds a legend, compatible with Python < 3.8."""
-        legend_patches = []
-        for state, label in self.labels.items():
-            color = self.colormap.get(state)
-            if color is not None:
-                patch = mpatches.Patch(color=color, label=label)
-                legend_patches.append(patch)
+        """Creates and adds a legend to the plot."""
+        legend_patches = [
+            mpatches.Patch(color=color, label=label)
+            for state, label in self.labels.items()
+            if (color := self.colormap.get(state)) is not None
+        ]
 
         if legend_patches:
             self.ax.legend(

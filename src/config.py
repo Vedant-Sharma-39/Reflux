@@ -430,7 +430,6 @@ EXPERIMENTS = {
             },
         },
     },
-    
     "exp1_front_speed_deleterious_scan": {
         "CAMPAIGN_ID": "exp1_front_speed_deleterious_scan",
         "run_mode": "structure_analysis",  # This run_mode collects all necessary metrics
@@ -461,6 +460,112 @@ EXPERIMENTS = {
                     "k_total": "k_total_speed_scan",
                 },
             }
+        },
+    },
+    "perturbation_resilience_v1": {
+        "CAMPAIGN_ID": "v1_perturbation_resilience_phi_neg0p5",
+        "run_mode": "perturbation",  # Use the dedicated run mode
+        "HPC_PARAMS": {"time": "0-08:00:00", "mem": "2G", "sims_per_task": 20},
+        "PARAM_GRID": {
+            # Run 100 replicates for a smooth average time-series plot
+            "replicates": range(100)
+        },
+        "SIM_SETS": {
+            # --- Regime 1: Geometry-Dominated (Structurally Robust) ---
+            "geometry_dominated_regime": {
+                "base_params": {
+                    "width": 256,
+                    "length": 2048,
+                    "phi": -0.5,
+                    "b_m": 0.55,  # Corresponds to s = -0.45
+                    "k_total": 0.10,  # Base k is ~90% of data-driven k_c=0.11
+                    "initial_condition_type": "mixed",
+                    # --- Perturbation & Sampling Parameters ---
+                    "total_run_time": 4000.0,
+                    "pulse_start_time": 1500.0,
+                    "pulse_duration": 100.0,
+                    "k_total_pulse": 10.0,  # Strong mixing pulse
+                    "sample_interval": 10.0,
+                },
+                "grid_params": {"replicate_id": "replicates"},
+            },
+            # --- Regime 2: Most Fragile (Hypothesized Tipping Point) ---
+            "most_fragile_regime": {
+                "base_params": {
+                    "width": 256,
+                    "length": 2048,
+                    "phi": -0.5,
+                    "b_m": 0.75,  # Corresponds to s = -0.25 (the dip)
+                    "k_total": 0.08,  # Base k is ~85% of data-driven k_c=0.095
+                    "initial_condition_type": "mixed",
+                    # --- Perturbation & Sampling Parameters ---
+                    "total_run_time": 4000.0,
+                    "pulse_start_time": 1500.0,
+                    "pulse_duration": 100.0,
+                    "k_total_pulse": 10.0,
+                    "sample_interval": 10.0,
+                },
+                "grid_params": {"replicate_id": "replicates"},
+            },
+            # --- Regime 3: Drift-Dominated (Structurally Robust again) ---
+            "drift_dominated_regime": {
+                "base_params": {
+                    "width": 256,
+                    "length": 2048,
+                    "phi": -0.5,
+                    "b_m": 0.90,  # Corresponds to s = -0.10
+                    "k_total": 0.13,  # Base k is ~87% of data-driven k_c=0.15
+                    "initial_condition_type": "mixed",
+                    # --- Perturbation & Sampling Parameters ---
+                    "total_run_time": 4000.0,
+                    "pulse_start_time": 1500.0,
+                    "pulse_duration": 100.0,
+                    "k_total_pulse": 10.0,
+                    "sample_interval": 10.0,
+                },
+                "grid_params": {"replicate_id": "replicates"},
+            },
+        },
+    },
+    "spatial_bet_hedging_v1": {
+        "CAMPAIGN_ID": "spatial_bet_hedging_v1",
+        "run_mode": "spatial_fluctuation_analysis",
+        "HPC_PARAMS": {
+            "time": "0-01:00:00",
+            "mem": "2G",
+            "sims_per_task": 100,
+        },
+        "PARAM_GRID": {
+            # --- Genetic/Switching Parameters ---
+            "b_m_scan": [0.75, 0.85, 0.95, 1.0],
+            "phi_scan": [-1.0, -0.9, -0.7, 0.0],
+            "k_total_scan": np.logspace(-2.5, 1.0, 25).tolist(),
+            # --- Environmental Parameters ---
+            "patch_width_scan": [15, 30, 60, 120],
+            "env_bet_hedging": {0: {"b_wt": 1.0}, 1: {"b_wt": 0.0, "b_m": 1.0}},
+        },
+        "SIM_SETS": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 1536,  # [FINAL] Max length set based on convergence analysis.
+                    "initial_condition_type": "mixed",
+                    "environment_map": "env_bet_hedging",
+                    "campaign_id": "spatial_bet_hedging_v1",
+                    # --- Smart Convergence Parameters ---
+                    "log_q_interval": 2.0,
+                    "convergence_min_q": 300.0,  # [FINAL] Start checking a bit later to be safe.
+                    "convergence_window": 50,
+                    "convergence_threshold": 0.01,
+                    "warmup_q_for_stats": 150.0,  # [FINAL] Use a slightly longer warmup for calculating stats.
+                },
+                "grid_params": {
+                    "b_m": "b_m_scan",
+                    "phi": "phi_scan",
+                    "k_total": "k_total_scan",
+                    "patch_width": "patch_width_scan",
+                },
+            },
         },
     },
 }

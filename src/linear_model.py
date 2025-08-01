@@ -1,7 +1,7 @@
 # FILE: src/linear_model.py
-# [DEFINITIVELY CORRECTED & ROBUST]
-# This version uses a simple, proven, and stall-proof Gillespie algorithm.
-# It is the definitive simulation engine for the project.
+# [DEFINITIVELY CORRECTED & ROBUST - WITH PERTURBATION METHOD]
+# This version fixes the AttributeError by storing `phi` and adds a
+# dedicated `set_switching_rate` method for robustly handling perturbations.
 
 import numpy as np
 import random
@@ -24,9 +24,17 @@ class GillespieSimulation:
         initial_mutant_patch_size: int = 0,
         metrics_manager: MetricsManager = None,
     ):
+        # --- Store all core parameters ---
         self.width, self.length = width, length
         self.b_wt, self.b_m = 1.0, b_m
-        self.k_wt_m, self.k_m_wt = self._calculate_asymmetric_rates(k_total, phi)
+        self.k_total = k_total
+        self.phi = phi  # <-- [FIX 1/2] STORE PHI AS AN ATTRIBUTE
+        self.k_total_base = k_total 
+        self.phi_base = phi      
+        # --- Initialize state variables ---
+        self.k_wt_m, self.k_m_wt = self._calculate_asymmetric_rates(
+            self.k_total, self.phi
+        )
         self.initial_condition_type = initial_condition_type
         self.initial_mutant_patch_size = initial_mutant_patch_size
         self.time = 0.0
@@ -39,6 +47,22 @@ class GillespieSimulation:
         self.metrics_manager = metrics_manager
         if self.metrics_manager:
             self.metrics_manager.register_simulation(self)
+
+    def set_switching_rate(self, new_k_total: float, new_phi: float = None):
+        """
+        Allows for dynamically changing the global switching
+        parameters during a simulation, as required for perturbation experiments.
+        """
+        if new_phi is None:
+            new_phi = self.phi_base  
+
+        # Update the component rates
+        self.k_wt_m, self.k_m_wt = self._calculate_asymmetric_rates(
+            new_k_total, new_phi
+        )
+
+        # This is crucial: immediately update the total event rate in the simulation
+        self._update_rates()
 
     @property
     def mutant_fraction(self) -> float:
@@ -146,14 +170,11 @@ class GillespieSimulation:
         ]
 
         if not empty_neighbors:
-            # This is not an error, just an unlucky choice. The step uses up time but does nothing.
-            # The cell's front status will be naturally updated later if needed.
             return True, False
 
         growth_site = random.choice(empty_neighbors)
         self.population[growth_site] = parent_type
 
-        # Re-check the status of all affected cells
         for c in self._get_neighbors_periodic(growth_site) + [growth_site, parent_cell]:
             if c in self.population:
                 self._check_and_update_front_status(c)
@@ -202,7 +223,7 @@ class GillespieSimulation:
                 else:
                     self._execute_switch_event(Mutant)
 
-        self._update_rates()
+        self._update_rates()  # This is called here for non-perturbation runs
         if self.metrics_manager:
-            self.metrics_manager.after_step()
+            self.metrics_manager.after_step_hook()
         return did_step, boundary_hit

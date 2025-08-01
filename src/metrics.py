@@ -1,23 +1,27 @@
 # FILE: src/metrics.py
-# [DEFINITIVE VERSION]
-# This file contains the complete and corrected set of all metric trackers
-# required to run every legacy and final experiment in the project.
+# [DEFINITIVE, CONSOLIDATED VERSION]
+# This file contains all metric trackers required for all experiments.
+# It supports legacy runs, the primary campaign, and visualization scripts.
 
 import numpy as np
 import pandas as pd
 from abc import ABC
 from typing import List, Tuple, TYPE_CHECKING
 import collections
-from hex_utils import Hex
 
 if TYPE_CHECKING:
-    from linear_model import GillespieSimulation, Wildtype, Mutant
+    # This block is for static type checkers and linters
+    from linear_model import GillespieSimulation
+    from fluctuating_model import FluctuatingGillespieSimulation
 
 
+# ==============================================================================
+# 1. ABSTRACT BASE CLASS
+# ==============================================================================
 class MetricTracker(ABC):
     """Abstract base class for all metric trackers."""
 
-    def __init__(self, sim: "GillespieSimulation"):
+    def __init__(self, sim):
         self.sim = sim
 
     def initialize(self):
@@ -30,15 +34,15 @@ class MetricTracker(ABC):
         pass
 
 
+# ==============================================================================
+# 2. LEGACY TRACKERS (For Reproducibility of Older Experiments)
+# ==============================================================================
 class SteadyStateTracker(MetricTracker):
     """For legacy 'steady_state' runs. Measures mean mutant fraction after a warmup."""
 
-    def __init__(
-        self, sim: "GillespieSimulation", warmup_time: float, sample_interval: float
-    ):
+    def __init__(self, sim, warmup_time: float, sample_interval: float):
         super().__init__(sim)
-        self.warmup_time = warmup_time
-        self.sample_interval = sample_interval
+        self.warmup_time, self.sample_interval = warmup_time, sample_interval
         self.next_sample_time = self.warmup_time
         self.mutant_fraction_samples = collections.deque()
 
@@ -58,13 +62,13 @@ class SteadyStateTracker(MetricTracker):
 class SectorWidthTracker(MetricTracker):
     """For 'calibration' runs. Measures the width of a single mutant sector over time."""
 
-    def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
+    def __init__(self, sim, capture_interval: float = 1.0):
         super().__init__(sim)
         self.capture_interval = capture_interval
         self.next_capture_q = 0.0
         self.width_trajectory: List[Tuple[float, int]] = []
 
-    def _get_r_offset(self, cell: Hex) -> int:
+    def _get_r_offset(self, cell) -> int:
         return cell.r + (cell.q + (cell.q & 1)) // 2
 
     def after_step_hook(self):
@@ -87,7 +91,7 @@ class SectorWidthTracker(MetricTracker):
 class InterfaceRoughnessTracker(MetricTracker):
     """For 'diffusion' runs. Measures W², the squared width of the ENTIRE population front."""
 
-    def __init__(self, sim: "GillespieSimulation", capture_interval: float = 0.5):
+    def __init__(self, sim, capture_interval: float = 0.5):
         super().__init__(sim)
         self.capture_interval = capture_interval
         self.next_capture_q = 0.0
@@ -98,10 +102,7 @@ class InterfaceRoughnessTracker(MetricTracker):
         if mean_q < self.next_capture_q:
             return
         self.next_capture_q += self.capture_interval
-
-        # [CORRECTED] Use sim._front_lookup to get ALL front cells (WT and M)
         front_cells = self.sim._front_lookup
-
         if len(front_cells) < 2:
             return
         q_values = np.array([cell.q for cell in front_cells])
@@ -121,11 +122,10 @@ class CorrelationAndStructureTracker(MetricTracker):
             num_samples,
             sample_interval,
         )
-        self.next_sample_time = self.warmup_time
-        self.samples_taken = 0
-        self.g_r_sum = collections.defaultdict(float)
-        self.g_r_counts = collections.defaultdict(int)
-        self.interface_density_sum = 0.0
+        self.next_sample_time, self.samples_taken = self.warmup_time, 0
+        self.g_r_sum, self.g_r_counts = collections.defaultdict(
+            float
+        ), collections.defaultdict(int)
         self._adj, self._last_front_set = {}, set()
 
     def _get_spin(self, cell_type):
@@ -192,11 +192,17 @@ class CorrelationAndStructureTracker(MetricTracker):
                 if self.g_r_counts[r] > 0
             ]
         )
-        return {"g_r": g_r_list}  # Legacy tracker only returned this
+        return {"g_r": g_r_list}
 
 
+# ==============================================================================
+# 3. PRIMARY CAMPAIGN TRACKER (For spatial_bet_hedging_v1)
+# ==============================================================================
 class FrontPropertiesTracker(MetricTracker):
-    """For modern 'structure_analysis' runs. Lightweight and fast."""
+    """
+    Lightweight tracker for modern campaign runs. Calculates and returns summary
+    statistics (mean and variance) of key metrics after a warmup period.
+    """
 
     def __init__(self, sim, warmup_time, num_samples, sample_interval):
         super().__init__(sim)
@@ -206,11 +212,16 @@ class FrontPropertiesTracker(MetricTracker):
             sample_interval,
         )
         self.next_sample_time, self.samples_taken = self.warmup_time, 0
-        self.interface_density_samples, self.mutant_fraction_samples = [], []
-        self.q_start, self.time_start = 0.0, 0.0
+        (
+            self.interface_density_samples,
+            self.mutant_fraction_samples,
+            self.front_speed_samples,
+        ) = ([], [], [])
+        self.last_sample_time, self.last_sample_q = -1.0, -1.0
 
     def initialize(self):
-        self.q_start, self.time_start = self.sim.mean_front_position, self.sim.time
+        self.last_sample_time = self.sim.time
+        self.last_sample_q = self.sim.mean_front_position
 
     def after_step_hook(self):
         if (
@@ -232,50 +243,98 @@ class FrontPropertiesTracker(MetricTracker):
         if total_neighbors > 0:
             self.interface_density_samples.append(total_interfaces / total_neighbors)
         self.mutant_fraction_samples.append(self.sim.mutant_fraction)
+        current_q, current_time = self.sim.mean_front_position, self.sim.time
+        delta_q, delta_t = (
+            current_q - self.last_sample_q,
+            current_time - self.last_sample_time,
+        )
+        speed = (delta_q / delta_t) if delta_t > 1e-9 else 0.0
+        self.front_speed_samples.append(speed)
+        self.last_sample_q, self.last_sample_time = current_q, current_time
         self.samples_taken += 1
         self.next_sample_time += self.sample_interval
 
-    def finalize(self):
-        self.q_end, self.time_end = self.sim.mean_front_position, self.sim.time
-
     def get_results(self):
-        avg_speed = (
-            (self.q_end - self.q_start) / (self.time_end - self.time_start)
-            if self.time_end > self.time_start
-            else 0.0
-        )
-        avg_interface_density = (
-            np.mean(self.interface_density_samples)
-            if self.interface_density_samples
-            else 0.0
-        )
-        var_rho_M = (
-            np.var(self.mutant_fraction_samples, ddof=1)
-            if len(self.mutant_fraction_samples) > 1
-            else 0.0
-        )
-        avg_rho_M = (
-            np.mean(self.mutant_fraction_samples)
-            if self.mutant_fraction_samples
-            else 0.0
-        )
         return {
-            "avg_front_speed": avg_speed,
-            "avg_interface_density": avg_interface_density,
-            "var_rho_M": var_rho_M,
-            "avg_rho_M": avg_rho_M,
+            "avg_front_speed": (
+                np.mean(self.front_speed_samples) if self.front_speed_samples else 0.0
+            ),
+            "var_front_speed": (
+                np.var(self.front_speed_samples, ddof=1)
+                if len(self.front_speed_samples) > 1
+                else 0.0
+            ),
+            "avg_interface_density": (
+                np.mean(self.interface_density_samples)
+                if self.interface_density_samples
+                else 0.0
+            ),
+            "avg_rho_M": (
+                np.mean(self.mutant_fraction_samples)
+                if self.mutant_fraction_samples
+                else 0.0
+            ),
+            "var_rho_M": (
+                np.var(self.mutant_fraction_samples, ddof=1)
+                if len(self.mutant_fraction_samples) > 1
+                else 0.0
+            ),
         }
 
 
+# ==============================================================================
+# 4. VISUALIZATION & DEBUG TRACKER
+# ==============================================================================
+class FrontDynamicsTracker(MetricTracker):
+    """
+    Creates a detailed time-series of front properties by logging at fixed intervals
+    of front advancement (delta_q). Used by debug and visualization scripts.
+    """
+
+    def __init__(self, sim, log_q_interval: float = 1.0):
+        super().__init__(sim)
+        self.log_q_interval = log_q_interval
+        self.next_log_q = 0.0
+        self.history = []
+        self.last_log_time = 0.0
+        self.last_log_q = 0.0
+
+    def after_step_hook(self):
+        current_q = self.sim.mean_front_position
+        if current_q >= self.next_log_q:
+            current_time = self.sim.time
+            delta_q, delta_t = (
+                current_q - self.last_log_q,
+                current_time - self.last_log_time,
+            )
+            speed = (delta_q / delta_t) if delta_t > 1e-9 else 0.0
+            self.history.append(
+                {
+                    "time": current_time,
+                    "mutant_fraction": self.sim.mutant_fraction,
+                    "mean_front_q": current_q,
+                    "front_speed": speed,
+                }
+            )
+            self.last_log_q, self.last_log_time = current_q, current_time
+            self.next_log_q += self.log_q_interval
+
+    def get_dataframe(self) -> pd.DataFrame:
+        return pd.DataFrame(self.history)
+
+
+# ==============================================================================
+# 5. ORCHESTRATOR CLASS
+# ==============================================================================
 class MetricsManager:
     """A manager to orchestrate the execution of multiple trackers."""
 
     def __init__(self):
         self.trackers: List[MetricTracker] = []
-        self._sim: "GillespieSimulation" = None
+        self.sim = None
 
-    def register_simulation(self, sim: "GillespieSimulation"):
-        self._sim = sim
+    def register_simulation(self, sim):
+        self.sim = sim
 
     def add_tracker(self, tracker: MetricTracker):
         self.trackers.append(tracker)
@@ -284,7 +343,7 @@ class MetricsManager:
         for tracker in self.trackers:
             tracker.initialize()
 
-    def after_step(self):
+    def after_step_hook(self):
         for tracker in self.trackers:
             tracker.after_step_hook()
 
