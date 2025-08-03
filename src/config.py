@@ -531,9 +531,9 @@ EXPERIMENTS = {
         "CAMPAIGN_ID": "spatial_bet_hedging_v1",
         "run_mode": "spatial_fluctuation_analysis",
         "HPC_PARAMS": {
-            "time": "0-01:00:00",
+            "time": "0-12:00:00",
             "mem": "2G",
-            "sims_per_task": 100,
+            "sims_per_task": 50,
         },
         "PARAM_GRID": {
             # --- Genetic/Switching Parameters ---
@@ -548,16 +548,17 @@ EXPERIMENTS = {
             "main_scan": {
                 "base_params": {
                     "width": 256,
-                    "length": 1536,  # [FINAL] Max length set based on convergence analysis.
+                    "length": 4096,  # [FINAL] Max length, increased for large patch test
                     "initial_condition_type": "mixed",
                     "environment_map": "env_bet_hedging",
                     "campaign_id": "spatial_bet_hedging_v1",
-                    # --- Smart Convergence Parameters ---
+                    # --- [UPGRADED] Smart Convergence Parameters ---
                     "log_q_interval": 2.0,
-                    "convergence_min_q": 300.0,  # [FINAL] Start checking a bit later to be safe.
+                    "convergence_min_cycles": 8,  # [NEW] Must complete at least 8 full cycles
                     "convergence_window": 50,
                     "convergence_threshold": 0.01,
-                    "warmup_q_for_stats": 150.0,  # [FINAL] Use a slightly longer warmup for calculating stats.
+                    "warmup_q_for_stats": 150.0,
+                    # 'convergence_min_q' is now deprecated and will be ignored
                 },
                 "grid_params": {
                     "b_m": "b_m_scan",

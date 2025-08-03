@@ -159,11 +159,6 @@ def find_kc_for_slice(params, group_df):
     return {"s": s_val, "phi": phi_val, "k_c": k_c, "plot_data": plot_data}
 
 
-# FILE: scripts/analyze_phase_boundaries.py
-
-# ... (keep all the other functions like main, find_kc_for_slice, etc. the same) ...
-
-
 # --- [MODIFIED] Debug Plotting with the "Perfect" Semilog Scale ---
 def generate_debug_fit_plot(result, debug_dir):
     s, phi, k_c, p_data = result["s"], result["phi"], result["k_c"], result["plot_data"]
@@ -208,9 +203,10 @@ def generate_debug_fit_plot(result, debug_dir):
             np.log10(max(p_data["k_values"]) * 2),
             200,
         )
+        # --- [THE FIX] ---
         ax.plot(
             k_smooth,
-            hybrid_sigmoid_model(np.log(k_smooth), *p_data["fit_params"]),
+            sigmoid_model(np.log(k_smooth), *p_data["fit_params"]),
             "r-",
             lw=3,
         )
@@ -222,7 +218,8 @@ def generate_debug_fit_plot(result, debug_dir):
 
     # Set axis limits to give some padding, ensuring 0 is visible
     min_y, max_y = np.min(p_data["density_values"]), np.max(p_data["density_values"])
-    ax.set_ylim(min_y - 0.05 * (max_y - min_y), max_y + 0.05 * (max_y - min_y))
+    if max_y > min_y:
+        ax.set_ylim(min_y - 0.05 * (max_y - min_y), max_y + 0.05 * (max_y - min_y))
 
     ax.set_xlabel("Total Switching Rate ($k_{total}$)", fontsize=14)
     ax.set_ylabel("Average Interface Density", fontsize=14)

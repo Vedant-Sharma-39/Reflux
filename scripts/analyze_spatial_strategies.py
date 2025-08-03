@@ -99,18 +99,18 @@ def plot_example_timeseries(params, figs_dir):
     )
 
     # --- [THE FIX] ---
-    # The 'params' dictionary passed to this function already contains the resolved
-    # environment_map dictionary. We don't need to look it up again.
-    # We just need to filter the params before unpacking.
+    # Filter the params dictionary to only include valid constructor arguments.
     sim_constructor_params = {
         k: v
         for k, v in params.items()
         if k in FluctuatingGillespieSimulation.__init__.__code__.co_varnames
     }
+    # The environment_map object is already resolved and passed in params.
+    sim_constructor_params["environment_map"] = params["environment_map"]
 
     sim = FluctuatingGillespieSimulation(**sim_constructor_params)
     manager = MetricsManager()
-    tracker = FrontDynamicsTracker(sim, log_interval=2.0)
+    tracker = FrontDynamicsTracker(sim, log_q_interval=2.0)
     manager.add_tracker(tracker)
 
     total_run_time = 400.0

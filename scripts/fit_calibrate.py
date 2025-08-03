@@ -17,9 +17,13 @@ sys.path.insert(0, os.path.join(project_root, "src"))
 
 try:
     # Use the CAMPAIGN_ID from your most recent, completed campaign
-    from config_calibration import CAMPAIGN_ID
-except ImportError:
-    print("Error: Could not import from src/config_calibration.py.")
+    from config import EXPERIMENTS
+
+    CAMPAIGN_ID = EXPERIMENTS["calibration_v4"]["CAMPAIGN_ID"]
+except (ImportError, KeyError):
+    print(
+        "Error: Could not import from src/config.py or find 'calibration_v4' experiment."
+    )
     sys.exit(1)
 
 
@@ -51,11 +55,11 @@ def main():
 
     # 1. Load the processed data
     analysis_dir = os.path.join(project_root, "data", CAMPAIGN_ID, "analysis")
-    data_path = os.path.join(analysis_dir, "calibration_curve_data.csv")
+    data_path = os.path.join(analysis_dir, "boundary_dynamics_summary.csv")
 
     if not os.path.exists(data_path):
         print(f"Error: Processed data file not found at {data_path}")
-        print("Please run 'scripts/analyze_calibration_results.py' first.")
+        print("Please run 'scripts/analyze_boundary_dynamics.py' first.")
         return
 
     df = pd.read_csv(data_path)
@@ -78,9 +82,6 @@ def main():
         popt_cub, pcov_cub = curve_fit(cubic_model, s_data, v_data, p0=[1.0, 0.5, 0.1])
         err_cub = np.sqrt(np.diag(pcov_cub))
         r2_cub = calculate_r_squared(v_data, cubic_model(s_data, *popt_cub))
-        
-        #log-fit
-        popt_log, pcov_log = curve_fit()
 
     except RuntimeError as e:
         print(f"Error during curve fitting: {e}")

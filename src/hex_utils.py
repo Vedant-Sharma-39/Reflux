@@ -55,61 +55,63 @@ Hex._directions = [
 class HexPlotter:
     """A high-performance plotter for hexagonal grids."""
 
-    def __init__(self, hex_size=1.0, labels=None, colormap=None):
+    def __init__(self, hex_size=1.0, labels=None, colormap=None, ax=None):
         self.size = hex_size
-        self.fig, self.ax = plt.subplots(figsize=(14, 8))
+        if ax is None:
+            self.fig, self.ax = plt.subplots(figsize=(14, 8))
+            self.fig.set_facecolor("#f0f0f0")
+        else:
+            self.ax = ax
+            self.fig = ax.figure
+
         self.colormap = colormap if colormap is not None else {}
         self.labels = labels if labels is not None else {}
-        self.fig.set_facecolor("#f0f0f0")
 
     def hex_to_cartesian(self, hex_obj: Hex) -> tuple[float, float]:
         """
-        [PUBLIC METHOD] Converts a Hex object's cube coordinates to Cartesian (x, y) coordinates.
-        This is now public to allow external scripts to align visualizations.
+        [CORRECTED] Converts a Hex object's cube coordinates to pointy-top
+        Cartesian (x, y) coordinates for plotting.
         """
         x = self.size * (3.0 / 2.0 * hex_obj.q)
-        y = self.size * (np.sqrt(3) / 2.0 * hex_obj.q + np.sqrt(3) * hex_obj.r)
+        y = self.size * np.sqrt(3) * (hex_obj.r + hex_obj.q / 2.0)
         return x, y
 
     def plot_population(self, population, title="", wt_front=None, m_front=None):
         """
         Plots the population, with optional highlighting for front cells.
         """
-        # On replots, we don't clear the axis by default to allow drawing backgrounds first.
-        # The debug script will call ax.clear() manually before plotting.
-
-        # Default to empty sets to avoid errors with None
         wt_front = wt_front or set()
         m_front = m_front or set()
 
         patches, facecolors, edgecolors, linewidths = [], [], [], []
 
         for hex_obj, value in population.items():
-            # --- INTERNAL CALL UPDATED ---
             center_x, center_y = self.hex_to_cartesian(hex_obj)
 
+            # [CORRECTED] Use correct radius and orientation for pointy-top hexes
+            # The radius is the distance from the center to a vertex.
             hexagon = RegularPolygon(
                 (center_x, center_y),
                 numVertices=6,
-                radius=self.size * (1 / np.sqrt(3)) * 0.98,  # Small gap between hexes
+                radius=self.size,
                 orientation=np.radians(0),
             )
             patches.append(hexagon)
             facecolors.append(self.colormap.get(value, "#FFFFFF"))
 
-            # Highlighting logic for front cells
             if hex_obj in wt_front or hex_obj in m_front:
-                edgecolors.append("#FF0000")  # Bright red edge for front cells
-                linewidths.append(0.5)  # Thicker edge
+                edgecolors.append("#FF0000")
+                linewidths.append(0.5)
             else:
-                edgecolors.append("#202020")  # Standard dark edge for bulk cells
+                edgecolors.append("#202020")
                 linewidths.append(0.15)
 
         collection = PatchCollection(
             patches, facecolors=facecolors, edgecolors=edgecolors, linewidths=linewidths
         )
         self.ax.add_collection(collection)
-        self.ax.set_title(title, fontsize=16, pad=20)
+        if title:
+            self.ax.set_title(title, fontsize=16, pad=10)
         self.ax.set_aspect("equal")
         self.ax.autoscale_view()
         self.ax.axis("off")
