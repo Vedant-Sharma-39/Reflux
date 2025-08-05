@@ -1,11 +1,11 @@
 # FILE: src/fluctuating_model.py
-# [DEFINITIVE, VECTORIZED & ASYMMETRIC ENV. SUPPORT]
-# This version is upgraded to handle environments with patches of varying widths,
-# as defined by the new `environment_patch_sequence` parameter.
+#
+# Definitive, vectorized model supporting environments with patches of
+# both symmetric and asymmetric widths.
 
 import numpy as np
 import random
-from typing import Dict, Set, Tuple, List
+from typing import Dict, Set, Tuple, List, Optional
 from hex_utils import Hex
 from metrics import MetricsManager
 
@@ -17,18 +17,28 @@ class FluctuatingGillespieSimulation:
         self,
         width: int,
         length: int,
-        environment_map: Dict,
-        environment_patch_sequence: List[Tuple[int, int]],
         k_total: float,
         phi: float,
         b_m: float,
+        environment_map: Dict,
+        environment_patch_sequence: Optional[List[Tuple[int, int]]] = None,
+        patch_width: Optional[int] = None,
         initial_condition_type: str = "mixed",
         initial_mutant_patch_size: int = 0,
-        metrics_manager: MetricsManager = None,
+        metrics_manager: Optional[MetricsManager] = None,
     ):
         self.width, self.length = width, length
         self.environment_map = environment_map
-        self.patch_sequence = environment_patch_sequence
+
+        # --- Backward compatibility for old symmetric patch_width param ---
+        if environment_patch_sequence is None and patch_width is not None:
+            self.patch_sequence = [(0, patch_width), (1, patch_width)]
+        elif environment_patch_sequence is not None:
+            self.patch_sequence = environment_patch_sequence
+        else:
+            # Default to a single, uniform environment if no patch info given
+            self.patch_sequence = [(0, self.length)]
+
         self.num_patches = len(environment_map)
 
         self.global_k_total = k_total
@@ -38,48 +48,17 @@ class FluctuatingGillespieSimulation:
         self.population: Dict[Hex, int] = self._initialize_population(
             initial_condition_type, initial_mutant_patch_size
         )
-        self.wt_front_cells, self.m_front_cells, self._front_lookup = {}, {}, set()
+        self.wt_front_cells: Dict[Hex, List[Hex]] = {}
+        self.m_front_cells: Dict[Hex, List[Hex]] = {}
+        self._front_lookup: Set[Hex] = set()
         self.sum_q, self.sum_q_sq, self.front_cell_count = 0.0, 0.0, 0
-        self.rates = {}
+        self.rates: Dict[str, float] = {}
         self.total_rate = 0.0
+        self.mean_front_position = 0.0
 
-        # --- [UPGRADED] Pre-calculation for asymmetric patches ---
-        self.q_to_patch_index = np.zeros(self.length, dtype=int)
-        current_q = 0
-        cycle_len = sum(width for _, width in self.patch_sequence)
-        if cycle_len <= 0:
-            # Handle case with no patches or zero-width patches
-            if self.num_patches > 0:
-                self.q_to_patch_index[:] = (
-                    self.patch_sequence[0][0] if self.patch_sequence else 0
-                )
-        else:
-            while current_q < self.length:
-                q_pos_in_cycle = 0
-                for patch_type, patch_width in self.patch_sequence:
-                    start_q = current_q + q_pos_in_cycle
-                    end_q = start_q + patch_width
-                    if start_q < self.length:
-                        self.q_to_patch_index[start_q : min(end_q, self.length)] = (
-                            patch_type
-                        )
-                    q_pos_in_cycle += patch_width
-                current_q += cycle_len
-
-        k_wt_m_global, k_m_wt_global = self._calculate_asymmetric_rates(
-            self.global_k_total, self.global_phi
-        )
-        self.patch_params = np.array(
-            [
-                [
-                    environment_map.get(i, {}).get("b_wt", 1.0),
-                    environment_map.get(i, {}).get("b_m", self.global_b_m),
-                    k_wt_m_global,
-                    k_m_wt_global,
-                ]
-                for i in range(self.num_patches)
-            ]
-        )
+        # --- Pre-calculation for environment lookup ---
+        self.q_to_patch_index = self._build_q_to_patch_map()
+        self.patch_params = self._build_patch_params_array()
 
         self._find_initial_front()
         self._update_rates()
@@ -87,190 +66,220 @@ class FluctuatingGillespieSimulation:
         if self.metrics_manager:
             self.metrics_manager.register_simulation(self)
 
+    def _build_q_to_patch_map(self) -> np.ndarray:
+        """Builds a fast lookup array mapping a q-coordinate to a patch type index."""
+        q_map = np.zeros(self.length, dtype=int)
+        cycle_len = sum(width for _, width in self.patch_sequence)
+        if cycle_len <= 0:
+            if self.patch_sequence:
+                q_map[:] = self.patch_sequence[0][0]
+            return q_map
+
+        current_q = 0
+        while current_q < self.length:
+            q_pos_in_cycle = 0
+            for patch_type, patch_width in self.patch_sequence:
+                start_q, end_q = (
+                    current_q + q_pos_in_cycle,
+                    current_q + q_pos_in_cycle + patch_width,
+                )
+                if start_q < self.length:
+                    q_map[start_q : min(end_q, self.length)] = patch_type
+                q_pos_in_cycle += patch_width
+            current_q += cycle_len
+        return q_map
+
+    def _build_patch_params_array(self) -> np.ndarray:
+        """Builds a NumPy array of parameters for each patch type for fast vectorized access."""
+        k_wt_m_global, k_m_wt_global = self._calculate_asymmetric_rates(
+            self.global_k_total, self.global_phi
+        )
+        return np.array(
+            [
+                [
+                    self.environment_map.get(i, {}).get("b_wt", 1.0),
+                    self.environment_map.get(i, {}).get("b_m", self.global_b_m),
+                    k_wt_m_global,
+                    k_m_wt_global,
+                ]
+                for i in range(self.num_patches)
+            ]
+        )
+
     @staticmethod
     def _calculate_asymmetric_rates(k_total, phi):
         phi = np.clip(phi, -1, 1)
         return (k_total / 2.0) * (1.0 - phi), (k_total / 2.0) * (1.0 + phi)
 
     def _update_rates(self):
+        """Vectorized rate calculation for all front cells."""
+        self.rates.clear()
+
         if self.wt_front_cells:
             wt_q_coords = np.array([cell.q for cell in self.wt_front_cells], dtype=int)
-            wt_q_coords = np.clip(wt_q_coords, 0, self.length - 1)
-            wt_patch_indices = self.q_to_patch_index[wt_q_coords]
-            wt_params_per_cell = self.patch_params[wt_patch_indices]
-            total_wt_growth_rate = np.sum(wt_params_per_cell[:, 0])
-            total_wt_switch_rate = np.sum(wt_params_per_cell[:, 2])
-            self.rates["WT_grows"] = total_wt_growth_rate
-            self.rates["WT_switches_to_M"] = total_wt_switch_rate
+            wt_patch_indices = self.q_to_patch_index[
+                np.clip(wt_q_coords, 0, self.length - 1)
+            ]
+            self.rates["wt_growth"] = self.patch_params[wt_patch_indices, 0].sum()
         else:
-            self.rates["WT_grows"] = 0.0
-            self.rates["WT_switches_to_M"] = 0.0
+            self.rates["wt_growth"] = 0.0
+
         if self.m_front_cells:
             m_q_coords = np.array([cell.q for cell in self.m_front_cells], dtype=int)
-            m_q_coords = np.clip(m_q_coords, 0, self.length - 1)
-            m_patch_indices = self.q_to_patch_index[m_q_coords]
-            m_params_per_cell = self.patch_params[m_patch_indices]
-            total_m_growth_rate = np.sum(m_params_per_cell[:, 1])
-            total_m_switch_rate = np.sum(m_params_per_cell[:, 3])
-            self.rates["M_grows"] = total_m_growth_rate
-            self.rates["M_switches_to_WT"] = total_m_switch_rate
+            m_patch_indices = self.q_to_patch_index[
+                np.clip(m_q_coords, 0, self.length - 1)
+            ]
+            self.rates["m_growth"] = self.patch_params[m_patch_indices, 1].sum()
         else:
-            self.rates["M_grows"] = 0.0
-            self.rates["M_switches_to_WT"] = 0.0
+            self.rates["m_growth"] = 0.0
+
+        self.rates["wt_to_m_switching"] = (
+            self.global_k_total
+            * (1.0 - self.global_phi)
+            / 2.0
+            * len(self.wt_front_cells)
+        )
+        self.rates["m_to_wt_switching"] = (
+            self.global_k_total
+            * (1.0 + self.global_phi)
+            / 2.0
+            * len(self.m_front_cells)
+        )
+
         self.total_rate = sum(self.rates.values())
+        return self.total_rate > 1e-9
 
-    @property
-    def mutant_fraction(self) -> float:
-        if self.front_cell_count == 0:
-            return 0.0
-        return len(self.m_front_cells) / self.front_cell_count
+    def step(self):
+        if not self._update_rates():
+            return False, False  # No events can occur
 
-    @property
-    def mean_front_position(self) -> float:
-        if self.front_cell_count == 0:
-            return float(self.length)
-        return self.sum_q / self.front_cell_count
+        dt = -np.log(random.random()) / self.total_rate
+        self.time += dt
 
-    def _initialize_population(
-        self, initial_condition_type, initial_mutant_patch_size
-    ) -> Dict[Hex, int]:
-        if initial_condition_type == "mixed":
-            return {
-                self._axial_to_cube(0, r): random.choice([Wildtype, Mutant])
-                for r in range(self.width)
-            }
-        elif initial_condition_type == "patch":
-            if initial_mutant_patch_size > 0:
-                start = (self.width - initial_mutant_patch_size) // 2
-                end = start + initial_mutant_patch_size
-                return {
-                    self._axial_to_cube(0, r): Mutant if start <= r < end else Wildtype
-                    for r in range(self.width)
-                }
-            else:
-                return {self._axial_to_cube(0, r): Wildtype for r in range(self.width)}
-        raise ValueError(f"Unknown initial_condition_type: {initial_condition_type}")
+        rand_val = random.random() * self.total_rate
+        boundary_hit = False
 
-    @staticmethod
-    def _axial_to_cube(q, r_offset):
-        r = r_offset - (q + (q & 1)) // 2
-        return Hex(q, r, -q - r)
+        cumulative_rate = 0.0
+        for event_type, rate in self.rates.items():
+            cumulative_rate += rate
+            if rand_val < cumulative_rate:
+                boundary_hit = self._execute_event(event_type)
+                break
 
-    def _get_neighbors_periodic(self, cell):
-        return [
-            self._axial_to_cube(n.q, (n.r + (n.q + (n.q & 1)) // 2) % self.width)
-            for n in cell.neighbors()
-        ]
-
-    def _is_valid_growth_site(self, cell):
-        return 0 <= cell.q < self.length and cell not in self.population
-
-    def _is_valid_growth_neighbor(self, cell):
-        return self._is_valid_growth_site(cell)
-
-    def _find_initial_front(self):
-        for cell in list(self.population):
-            self._check_and_update_front_status(cell)
-
-    def _check_and_update_front_status(self, cell):
-        is_on_front = any(
-            self._is_valid_growth_site(n) for n in self._get_neighbors_periodic(cell)
-        )
-        is_in_lookup = cell in self._front_lookup
-        if is_on_front and not is_in_lookup:
-            self._front_lookup.add(cell)
-            c_type = self.population.get(cell)
-            (self.wt_front_cells if c_type == Wildtype else self.m_front_cells)[
-                cell
-            ] = True
-            self.front_cell_count += 1
-            self.sum_q += cell.q
-            self.sum_q_sq += cell.q**2
-        elif not is_on_front and is_in_lookup:
-            self._front_lookup.remove(cell)
-            c_type = self.population.get(cell)
-            if c_type == Wildtype:
-                del self.wt_front_cells[cell]
-            else:
-                del self.m_front_cells[cell]
-            self.front_cell_count -= 1
-            self.sum_q -= cell.q
-            self.sum_q_sq -= cell.q**2
-
-    def _execute_growth_event(self, parent_type: int):
-        parent_pool = (
-            self.wt_front_cells if parent_type == Wildtype else self.m_front_cells
-        )
-        if not parent_pool:
-            return False, False
-        parents = list(parent_pool.keys())
-        q_coords = np.array([p.q for p in parents], dtype=int)
-        q_coords = np.clip(q_coords, 0, self.length - 1)
-        patch_indices = self.q_to_patch_index[q_coords]
-        rate_idx = 0 if parent_type == Wildtype else 1
-        weights = self.patch_params[patch_indices, rate_idx]
-        if np.sum(weights) <= 1e-9:
-            return True, False
-        parent_cell = random.choices(parents, weights=weights, k=1)[0]
-        empty_neighbors = [
-            n
-            for n in self._get_neighbors_periodic(parent_cell)
-            if self._is_valid_growth_neighbor(n)
-        ]
-        if not empty_neighbors:
-            return True, False
-        growth_site = random.choice(empty_neighbors)
-        self.population[growth_site] = parent_type
-        for c in self._get_neighbors_periodic(growth_site) + [growth_site, parent_cell]:
-            if c in self.population:
-                self._check_and_update_front_status(c)
-        boundary_hit = growth_site.q >= self.length - 1
         return True, boundary_hit
 
-    def _execute_switch_event(self, original_type: int):
-        source_pool = (
-            self.wt_front_cells if original_type == Wildtype else self.m_front_cells
-        )
-        if not source_pool:
-            return
-        parents = list(source_pool.keys())
-        q_coords = np.array([p.q for p in parents], dtype=int)
-        q_coords = np.clip(q_coords, 0, self.length - 1)
-        patch_indices = self.q_to_patch_index[q_coords]
-        rate_idx = 2 if original_type == Wildtype else 3
-        weights = self.patch_params[patch_indices, rate_idx]
-        if np.sum(weights) <= 1e-9:
-            return
-        cell_to_switch = random.choices(parents, weights=weights, k=1)[0]
-        new_type = Mutant if original_type == Wildtype else Wildtype
-        self.population[cell_to_switch] = new_type
-        target_pool = (
-            self.m_front_cells if original_type == Wildtype else self.wt_front_cells
-        )
-        del source_pool[cell_to_switch]
-        target_pool[cell_to_switch] = True
+    def _execute_event(self, event_type: str) -> bool:
+        """Executes the chosen Gillespie event."""
+        if event_type == "wt_growth":
+            parent_cell = random.choice(list(self.wt_front_cells.keys()))
+            empty_neighbor = random.choice(self.wt_front_cells[parent_cell])
+            self._add_cell(empty_neighbor, Wildtype)
+            return empty_neighbor.q >= self.length - 1
 
-    def step(self) -> Tuple[bool, bool]:
-        if self.total_rate <= 1e-9:
-            return False, False
-        dt = -np.log(random.uniform(0, 1)) / self.total_rate
-        self.time += dt
-        u = random.uniform(0, 1) * self.total_rate
-        did_step, boundary_hit = True, False
-        cumulative_rate = self.rates["WT_grows"]
-        if u < cumulative_rate:
-            did_step, boundary_hit = self._execute_growth_event(Wildtype)
+        elif event_type == "m_growth":
+            parent_cell = random.choice(list(self.m_front_cells.keys()))
+            empty_neighbor = random.choice(self.m_front_cells[parent_cell])
+            self._add_cell(empty_neighbor, Mutant)
+            return empty_neighbor.q >= self.length - 1
+
+        elif event_type == "wt_to_m_switching":
+            cell_to_switch = random.choice(list(self.wt_front_cells.keys()))
+            self._update_cell_type(cell_to_switch, Wildtype, Mutant)
+
+        elif event_type == "m_to_wt_switching":
+            cell_to_switch = random.choice(list(self.m_front_cells.keys()))
+            self._update_cell_type(cell_to_switch, Mutant, Wildtype)
+
+        return False
+
+    def _add_cell(self, cell: Hex, cell_type: int):
+        self.population[cell] = cell_type
+        self._update_front_after_addition(cell, cell_type)
+
+    def _update_cell_type(self, cell: Hex, old_type: int, new_type: int):
+        self.population[cell] = new_type
+        if old_type == Wildtype:
+            empty_neighbors = self.wt_front_cells.pop(cell)
         else:
-            cumulative_rate += self.rates["M_grows"]
-            if u < cumulative_rate:
-                did_step, boundary_hit = self._execute_growth_event(Mutant)
-            else:
-                cumulative_rate += self.rates["WT_switches_to_M"]
-                if u < cumulative_rate:
-                    self._execute_switch_event(Wildtype)
-                else:
-                    self._execute_switch_event(Mutant)
-        self._update_rates()
-        if self.metrics_manager:
-            self.metrics_manager.after_step_hook()
-        return did_step, boundary_hit
+            empty_neighbors = self.m_front_cells.pop(cell)
+
+        if new_type == Wildtype:
+            self.wt_front_cells[cell] = empty_neighbors
+        else:
+            self.m_front_cells[cell] = empty_neighbors
+
+    def _update_front_after_addition(self, new_cell: Hex, new_cell_type: int):
+        for neighbor in new_cell.neighbors():
+            parent_cell = neighbor.wrap(self.width)
+            if parent_cell in self._front_lookup:
+                front_dict = (
+                    self.wt_front_cells
+                    if self.population.get(parent_cell) == Wildtype
+                    else self.m_front_cells
+                )
+                if new_cell in front_dict.get(parent_cell, []):
+                    front_dict[parent_cell].remove(new_cell)
+                    if not front_dict[parent_cell]:
+                        del front_dict[parent_cell]
+                        self._front_lookup.remove(parent_cell)
+                        self._update_front_stats_remove(parent_cell)
+
+        empty_neighbors = [
+            n
+            for n in new_cell.neighbors()
+            if self.population.get(n.wrap(self.width), Empty) == Empty
+        ]
+        if empty_neighbors:
+            front_dict = (
+                self.wt_front_cells if new_cell_type == Wildtype else self.m_front_cells
+            )
+            front_dict[new_cell] = empty_neighbors
+            self._front_lookup.add(new_cell)
+            self._update_front_stats_add(new_cell)
+
+    def _initialize_population(self, ic_type, patch_size):
+        pop = {}
+        if ic_type == "patch":
+            start_r = (self.width - patch_size) // 2
+            for r in range(start_r, start_r + patch_size):
+                pop[Hex(0, r, -r)] = Mutant
+            for r in range(self.width):
+                if not (start_r <= r < start_r + patch_size):
+                    pop[Hex(0, r, -r)] = Wildtype
+        else:  # mixed
+            for r in range(self.width):
+                pop[Hex(0, r, -r)] = random.choice([Wildtype, Mutant])
+        return pop
+
+    def _find_initial_front(self):
+        self.sum_q, self.sum_q_sq, self.front_cell_count = 0.0, 0.0, 0
+        for cell, cell_type in self.population.items():
+            empty_neighbors = [
+                n
+                for n in cell.neighbors()
+                if self.population.get(n.wrap(self.width), Empty) == Empty
+            ]
+            if empty_neighbors:
+                front_dict = (
+                    self.wt_front_cells if cell_type == Wildtype else self.m_front_cells
+                )
+                front_dict[cell] = empty_neighbors
+                self._front_lookup.add(cell)
+                self._update_front_stats_add(cell)
+
+    def _update_front_stats_add(self, cell: Hex):
+        self.sum_q += cell.q
+        self.sum_q_sq += cell.q**2
+        self.front_cell_count += 1
+        self._recalculate_mean_front()
+
+    def _update_front_stats_remove(self, cell: Hex):
+        self.sum_q -= cell.q
+        self.sum_q_sq -= cell.q**2
+        self.front_cell_count -= 1
+        self._recalculate_mean_front()
+
+    def _recalculate_mean_front(self):
+        self.mean_front_position = (
+            self.sum_q / self.front_cell_count if self.front_cell_count > 0 else 0.0
+        )

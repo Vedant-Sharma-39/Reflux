@@ -1,48 +1,24 @@
 # FILE: src/hex_utils.py
-# A robust, self-contained library for hexagonal grid math and high-quality visualization.
+# Defines the Hex coordinate system and a Matplotlib-based plotter.
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import RegularPolygon
-from matplotlib.collections import PatchCollection
-import matplotlib.patches as mpatches
+from collections import namedtuple
+
+# Define cell types for clarity
+Empty, Wildtype, Mutant = 0, 1, 2
+
+# Define Hex coordinate class using cube coordinates
+Hex = namedtuple("Hex", ["q", "r", "s"])
 
 
-class Hex:
-    """A class for a single hexagon using cube coordinates."""
-
-    __slots__ = ("q", "r", "s")
-
-    def __init__(self, q: int, r: int, s: int):
-        if round(q + r + s) != 0:
-            raise ValueError("Cube coordinates (q, r, s) must sum to 0")
-        self.q = q
-        self.r = r
-        self.s = s
-
-    def __hash__(self):
-        return hash((self.q, self.r, self.s))
-
-    def __eq__(self, other):
-        return (
-            isinstance(other, Hex)
-            and self.q == other.q
-            and self.r == other.r
-            and self.s == other.s
-        )
-
-    def __add__(self, other):
-        """Vector addition for Hex objects."""
-        return Hex(self.q + other.q, self.r + other.r, self.s + other.s)
-
-    def neighbor(self, direction_index: int):
-        return self + Hex._directions[direction_index]
-
-    def neighbors(self):
-        return [self.neighbor(i) for i in range(6)]
+def hex_add(h1, h2):
+    return Hex(h1.q + h2.q, h1.r + h2.r, h1.s + h2.s)
 
 
-Hex._directions = [
+# Define the six directions on a hexagonal grid
+hex_directions = [
     Hex(1, 0, -1),
     Hex(1, -1, 0),
     Hex(0, -1, 1),
@@ -52,94 +28,87 @@ Hex._directions = [
 ]
 
 
+# Add neighbor and wrap methods to the Hex class
+def hex_neighbor(h, direction_idx):
+    return hex_add(h, hex_directions[direction_idx])
+
+
+def hex_neighbors(h):
+    return [hex_neighbor(h, i) for i in range(6)]
+
+
+def hex_wrap(h, width):
+    # Apply periodic boundary conditions in the transverse direction (r)
+    # The s coordinate is derived from q and r
+    wrapped_r = h.r % width
+    return Hex(h.q, wrapped_r, -h.q - wrapped_r)
+
+
+Hex.neighbor = hex_neighbor
+Hex.neighbors = hex_neighbors
+Hex.wrap = hex_wrap
+
+
 class HexPlotter:
-    """A high-performance plotter for hexagonal grids."""
-
-    def __init__(self, hex_size=1.0, labels=None, colormap=None, ax=None):
+    def __init__(self, hex_size, labels, colormap, ax=None):
         self.size = hex_size
+        self.labels = labels
+        self.colormap = colormap
         if ax is None:
-            self.fig, self.ax = plt.subplots(figsize=(14, 8))
-            self.fig.set_facecolor("#f0f0f0")
+            self.fig, self.ax = plt.subplots(1, 1, figsize=(20, 15))
         else:
-            self.ax = ax
-            self.fig = ax.figure
+            self.fig, self.ax = ax.get_figure(), ax
+        self.ax.set_aspect("equal")
+        self.ax.set_facecolor("white")
+        for spine in self.ax.spines.values():
+            spine.set_visible(False)
+        self.ax.get_xaxis().set_ticks([])
+        self.ax.get_yaxis().set_ticks([])
 
-        self.colormap = colormap if colormap is not None else {}
-        self.labels = labels if labels is not None else {}
-
-    def hex_to_cartesian(self, hex_obj: Hex) -> tuple[float, float]:
-        """
-        [CORRECTED] Converts a Hex object's cube coordinates to pointy-top
-        Cartesian (x, y) coordinates for plotting.
-        """
-        x = self.size * (3.0 / 2.0 * hex_obj.q)
-        y = self.size * np.sqrt(3) * (hex_obj.r + hex_obj.q / 2.0)
+    def hex_to_cartesian(self, h):
+        x = self.size * (3.0 / 2 * h.q)
+        y = self.size * (np.sqrt(3) / 2 * h.q + np.sqrt(3) * h.r)
         return x, y
 
     def plot_population(self, population, title="", wt_front=None, m_front=None):
-        """
-        Plots the population, with optional highlighting for front cells.
-        """
-        wt_front = wt_front or set()
-        m_front = m_front or set()
+        self.ax.clear()
+        self.ax.set_title(title, fontsize=20)
 
-        patches, facecolors, edgecolors, linewidths = [], [], [], []
+        all_x, all_y = [], []
+        for h, cell_type in population.items():
+            x, y = self.hex_to_cartesian(h)
+            all_x.append(x)
+            all_y.append(y)
 
-        for hex_obj, value in population.items():
-            center_x, center_y = self.hex_to_cartesian(hex_obj)
+            facecolor = self.colormap.get(cell_type, "lightgrey")
+            is_wt_front = wt_front is not None and h in wt_front
+            is_m_front = m_front is not None and h in m_front
 
-            # [CORRECTED] Use correct radius and orientation for pointy-top hexes
-            # The radius is the distance from the center to a vertex.
+            if is_wt_front or is_m_front:
+                edgecolor = "red" if is_m_front else "darkblue"
+                linewidth, zorder = 2.0, 5
+            else:
+                edgecolor, linewidth, zorder = "black", 0.5, 1
+
             hexagon = RegularPolygon(
-                (center_x, center_y),
+                (x, y),
                 numVertices=6,
                 radius=self.size,
-                orientation=np.radians(0),
+                orientation=np.radians(30),
+                facecolor=facecolor,
+                edgecolor=edgecolor,
+                linewidth=linewidth,
+                zorder=zorder,
             )
-            patches.append(hexagon)
-            facecolors.append(self.colormap.get(value, "#FFFFFF"))
+            self.ax.add_patch(hexagon)
 
-            if hex_obj in wt_front or hex_obj in m_front:
-                edgecolors.append("#FF0000")
-                linewidths.append(0.5)
-            else:
-                edgecolors.append("#202020")
-                linewidths.append(0.15)
+        if all_x:
+            self.ax.set_xlim(min(all_x) - 2 * self.size, max(all_x) + 2 * self.size)
+            self.ax.set_ylim(min(all_y) - 2 * self.size, max(all_y) + 2 * self.size)
 
-        collection = PatchCollection(
-            patches, facecolors=facecolors, edgecolors=edgecolors, linewidths=linewidths
-        )
-        self.ax.add_collection(collection)
-        if title:
-            self.ax.set_title(title, fontsize=16, pad=10)
         self.ax.set_aspect("equal")
-        self.ax.autoscale_view()
-        self.ax.axis("off")
-        self.add_legend()
-        plt.draw()
-
-    def add_legend(self):
-        """Creates and adds a legend to the plot."""
-        legend_patches = [
-            mpatches.Patch(color=color, label=label)
-            for state, label in self.labels.items()
-            if (color := self.colormap.get(state)) is not None
-        ]
-
-        if legend_patches:
-            self.ax.legend(
-                handles=legend_patches,
-                bbox_to_anchor=(1.01, 1),
-                loc="upper left",
-                frameon=False,
-                fontsize=12,
-            )
+        self.ax.get_xaxis().set_ticks([])
+        self.ax.get_yaxis().set_ticks([])
 
     def save_figure(self, filename, dpi=150):
-        self.fig.savefig(
-            filename,
-            dpi=dpi,
-            bbox_inches="tight",
-            pad_inches=0.2,
-            facecolor=self.fig.get_facecolor(),
-        )
+        self.fig.savefig(filename, dpi=dpi, bbox_inches="tight")
