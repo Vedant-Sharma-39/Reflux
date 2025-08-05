@@ -531,9 +531,9 @@ EXPERIMENTS = {
         "CAMPAIGN_ID": "spatial_bet_hedging_v1",
         "run_mode": "spatial_fluctuation_analysis",
         "HPC_PARAMS": {
-            "time": "0-12:00:00",
+            "time": "0-3:00:00",
             "mem": "2G",
-            "sims_per_task": 50,
+            "sims_per_task": 20,
         },
         "PARAM_GRID": {
             # --- Genetic/Switching Parameters ---
@@ -548,23 +548,194 @@ EXPERIMENTS = {
             "main_scan": {
                 "base_params": {
                     "width": 256,
-                    "length": 4096,  # [FINAL] Max length, increased for large patch test
+                    "length": 4096,
                     "initial_condition_type": "mixed",
                     "environment_map": "env_bet_hedging",
                     "campaign_id": "spatial_bet_hedging_v1",
-                    # --- [UPGRADED] Smart Convergence Parameters ---
+                    # --- [UPGRADED] Cycle-Aware Convergence Parameters ---
                     "log_q_interval": 2.0,
-                    "convergence_min_cycles": 8,  # [NEW] Must complete at least 8 full cycles
-                    "convergence_window": 50,
+                    "convergence_min_cycles": 8,
+                    "convergence_window": 10,  # Check convergence over last 10 cycles
                     "convergence_threshold": 0.01,
-                    "warmup_q_for_stats": 150.0,
-                    # 'convergence_min_q' is now deprecated and will be ignored
+                    "warmup_cycles_for_stats": 4,  # Use first 4 cycles as warmup
                 },
                 "grid_params": {
                     "b_m": "b_m_scan",
                     "phi": "phi_scan",
                     "k_total": "k_total_scan",
                     "patch_width": "patch_width_scan",
+                },
+            },
+        },
+    },
+    "spatial_bet_hedging_v2": {
+        "CAMPAIGN_ID": "v2_spatial_bet_hedging_symmetric",
+        "run_mode": "spatial_fluctuation_analysis",
+        "HPC_PARAMS": {
+            "time": "1-12:00:00",  # Increased time for longer sims
+            "mem": "2G",
+            "sims_per_task": 100,
+        },
+        "PARAM_GRID": {
+            ### <<< IMPROVEMENT >>> ###
+            # Focus on deleterious mutants, avoiding the neutral b_m=1.0 case
+            "b_m_scan": [0.75, 0.85, 0.95],
+            # Full, symmetric scan of switching bias
+            "phi_symmetric_scan": np.linspace(-1.0, 1.0, 11).tolist(),
+            # Denser scan for k_total in the most relevant range
+            "k_total_focused_scan": np.unique(np.logspace(-2.5, 1.5, 40)).tolist(),
+            "patch_width_scan": [15, 30, 60, 120],
+            "env_bet_hedging": {0: {"b_wt": 1.0}, 1: {"b_wt": 0.0, "b_m": 1.0}},
+        },
+        "SIM_SETS": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 8192,
+                    "initial_condition_type": "mixed",
+                    "environment_map": "env_bet_hedging",
+                    "campaign_id": "spatial_bet_hedging_v2",
+                    "num_replicates": 8,  # Increased for better averaging
+                    # Robust cycle-aware convergence parameters
+                    "log_q_interval": 2.0,
+                    "convergence_min_cycles": 8,
+                    "convergence_window": 10,
+                    "convergence_threshold": 0.01,
+                    "warmup_cycles_for_stats": 4,
+                },
+                "grid_params": {
+                    "b_m": "b_m_scan",
+                    "phi": "phi_symmetric_scan",
+                    "k_total": "k_total_focused_scan",
+                    "patch_width": "patch_width_scan",
+                },
+            },
+        },
+    },
+    "spatial_bet_hedging_final": {
+        "CAMPAIGN_ID": "v_final_spatial_bet_hedging",
+        "run_mode": "spatial_fluctuation_analysis",
+        "HPC_PARAMS": {
+            "time": "1-04:00:00",  # Increased time for long simulations
+            "mem": "2G",
+            "sims_per_task": 250,  # Smaller chunks for a very large campaign
+        },
+        "PARAM_GRID": {
+            # Focus on deleterious mutants where bet-hedging is most relevant
+            "b_m_scan": [0.75, 0.85, 0.95],
+            # Full, symmetric scan of switching bias to see both strategies
+            "phi_symmetric_scan": np.linspace(-1.0, 1.0, 11).tolist(),
+            # Denser scan for k_total in the most relevant range
+            "k_total_focused_scan": np.unique(np.logspace(-3, 1.5, 40)).tolist(),
+            # Key environmental scales
+            "patch_width_scan": [30, 60, 120],
+            "env_bet_hedging": {0: {"b_wt": 1.0}, 1: {"b_wt": 0.0, "b_m": 1.0}},
+        },
+        "SIM_SETS": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 8192,
+                    "initial_condition_type": "mixed",
+                    "environment_map": "env_bet_hedging",
+                    "campaign_id": "spatial_bet_hedging_final",
+                    "num_replicates": 32,
+                    # Robust cycle-aware convergence parameters
+                    "log_q_interval": 2.0,
+                    "convergence_min_cycles": 8,
+                    "convergence_window": 10,
+                    "convergence_threshold": 0.01,
+                    "warmup_cycles_for_stats": 4,
+                },
+                "grid_params": {
+                    "b_m": "b_m_scan",
+                    "phi": "phi_symmetric_scan",
+                    "k_total": "k_total_focused_scan",
+                    "patch_width": "patch_width_scan",
+                },
+            },
+        },
+    },
+    "asymmetric_environment_v1": {
+        "CAMPAIGN_ID": "v1_asymmetric_env_bet_hedging",
+        "run_mode": "spatial_fluctuation_analysis",
+        "HPC_PARAMS": {
+            "time": "1-00:00:00",
+            "mem": "2G",
+            "sims_per_task": 150,
+        },
+        "PARAM_GRID": {
+            # Test two fitness landscapes
+            "b_m_scan": [0.75, 0.9],
+            # A focused scan on the most promising "polluting" strategies
+            "phi_polluting_scan": np.linspace(-1.0, 0.0, 6).tolist(),
+            # Densely scan k_total to precisely locate the optimum
+            "k_total_scan": np.logspace(-2.5, 1.0, 30).tolist(),
+            ### <<< NEW ENVIRONMENT DEFINITIONS >>> ###
+            # The environment map defines the properties of patch types 0 and 1
+            "env_map_bet_hedging": {0: {"b_wt": 1.0}, 1: {"b_wt": 0.0, "b_m": 1.0}},
+            # The new sequences define the widths of these patches in a cycle
+            "env_asym_30_90": [(0, 30), (1, 90)],
+            "env_asym_60_60": [(0, 60), (1, 60)],  # Symmetric control case
+            "env_asym_90_30": [(0, 90), (1, 30)],
+            # Create a list of the sequence names to iterate over
+            "asymmetric_sequences": [
+                "env_asym_30_90",
+                "env_asym_60_60",
+                "env_asym_90_30",
+            ],
+        },
+        "SIM_SETS": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 8192,
+                    "initial_condition_type": "mixed",
+                    "environment_map": "env_map_bet_hedging",
+                    "campaign_id": "asymmetric_environment_v1",
+                    "num_replicates": 32,
+                    # Use the robust cycle-aware convergence parameters
+                    "log_q_interval": 2.0,
+                    "convergence_min_cycles": 8,
+                    "convergence_window": 10,
+                    "convergence_threshold": 0.01,
+                    "warmup_cycles_for_stats": 4,
+                },
+                "grid_params": {
+                    "b_m": "b_m_scan",
+                    "phi": "phi_polluting_scan",
+                    "k_total": "k_total_scan",
+                    # This will iterate over the three different environment sequences
+                    "environment_patch_sequence": "asymmetric_sequences",
+                },
+            },
+        },
+    },
+    "exp_relaxation_dynamics": {
+        "CAMPAIGN_ID": "v1_relaxation_from_mutant",
+        "run_mode": "timeseries_from_pure_state",  # New, descriptive run mode
+        "HPC_PARAMS": {"time": "0-08:00:00", "mem": "4G", "sims_per_task": 50},
+        "PARAM_GRID": {
+            "s_deleterious_scan": np.linspace(-0.8, 0.0, 9).tolist(),
+            "b_m_from_s_scan": [s + 1.0 for s in np.linspace(-0.8, 0.0, 9)],
+            "phi_slices": [-0.5, 0.0, 0.5],
+            "k_total_scan": np.logspace(-2, 2, 20).tolist(),
+        },
+        "SIM_SETS": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 8192,
+                    "num_replicates": 40,
+                    "initial_condition_type": "patch",
+                    "initial_mutant_patch_size": "width",  # Will be evaluated to 256
+                    "max_sim_time": 5000.0,
+                    "log_interval": 20.0,
+                },
+                "grid_params": {
+                    "b_m": "b_m_from_s_scan",
+                    "phi": "phi_slices",
+                    "k_total": "k_total_scan",
                 },
             },
         },

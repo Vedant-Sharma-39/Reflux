@@ -10,6 +10,7 @@ import os
 import traceback
 from collections import deque
 import numpy as np
+import pandas as pd
 
 # This ensures the script can find other modules in the 'src' directory
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -24,72 +25,116 @@ from src.metrics import (
     InterfaceRoughnessTracker,
     FrontPropertiesTracker,
     FrontDynamicsTracker,
+    TimeSeriesTracker,
 )
 from src.config import EXPERIMENTS
 
 
-# --- [DEFINITIVELY CORRECTED] Worker function with CYCLE-AWARE logic ---
+# --- ### DEFINITIVE VERSION WITH BACKWARD COMPATIBILITY ### ---
 def run_spatial_fluctuation_analysis(params):
     """
-    Runs analysis for fluctuating environments with dynamic stopping criteria
-    based on the convergence of the running average speed.
+    Runs analysis for fluctuating environments. It is backward compatible and can
+    handle both old configs with `patch_width` and new configs with
+    `environment_patch_sequence`.
     """
     sim_params = params.copy()
-
     env_map_name = sim_params.pop("environment_map")
-    sim_params.pop("campaign_id", None)
+    # Use campaign_id from params, fallback to a default if not present
+    campaign_id = sim_params.pop(
+        "campaign_id", next(iter(EXPERIMENTS.values()))["CAMPAIGN_ID"]
+    )
+    actual_env_map = (
+        EXPERIMENTS.get(campaign_id, {}).get("PARAM_GRID", {}).get(env_map_name)
+    )
+    if actual_env_map is None:
+        # Fallback for older configs where campaign_id might not match experiment name
+        for exp in EXPERIMENTS.values():
+            if env_map_name in exp.get("PARAM_GRID", {}):
+                actual_env_map = exp["PARAM_GRID"][env_map_name]
+                break
+    if actual_env_map is None:
+        raise ValueError(
+            f"Could not find environment map named '{env_map_name}' in any experiment config."
+        )
 
-    exp_name = params.get("campaign_id", "spatial_bet_hedging_v1")
-    actual_env_map = EXPERIMENTS[exp_name]["PARAM_GRID"][env_map_name]
+    # --- ### BACKWARD COMPATIBILITY SHIM ### ---
+    if "environment_patch_sequence" in sim_params:
+        patch_sequence_name = sim_params.pop("environment_patch_sequence")
+        actual_patch_sequence = EXPERIMENTS[campaign_id]["PARAM_GRID"][
+            patch_sequence_name
+        ]
+        sim_params["environment_patch_sequence"] = actual_patch_sequence
+        patch0_width = actual_patch_sequence[0][1]
+        patch1_width = actual_patch_sequence[1][1]
+    elif "patch_width" in sim_params:
+        patch_width = sim_params.pop("patch_width")
+        actual_patch_sequence = [(0, patch_width), (1, patch_width)]
+        sim_params["environment_patch_sequence"] = actual_patch_sequence
+        patch0_width = patch_width
+        patch1_width = patch_width
+    else:
+        raise ValueError(
+            "Missing 'patch_width' or 'environment_patch_sequence' in simulation parameters."
+        )
+    # --- ### END SHIM ### ---
 
     constructor_args = FluctuatingGillespieSimulation.__init__.__code__.co_varnames
     sim_constructor_params = {
         k: v for k, v in sim_params.items() if k in constructor_args
     }
 
-    # --- [THE FIX] ---
-    # 1. Create the MetricsManager.
     manager = MetricsManager()
-    # 2. Add the manager to the parameters that will be passed to the constructor.
     sim_constructor_params["metrics_manager"] = manager
-
-    # 3. Create the simulation. It will now be aware of the manager.
     sim = FluctuatingGillespieSimulation(
         environment_map=actual_env_map, **sim_constructor_params
     )
 
-    # 4. Create and register the tracker with the manager.
     tracker = FrontDynamicsTracker(sim, log_q_interval=params["log_q_interval"])
     manager.add_tracker(tracker)
+    manager.register_simulation(sim)
     manager.initialize_all()
 
-    running_avg_history = deque(maxlen=params["convergence_window"])
-
-    num_patches = len(actual_env_map)
-    cycle_length = params["patch_width"] * num_patches
-    min_q_for_convergence_check = params["convergence_min_cycles"] * cycle_length
+    cycle_length_q = sum(width for _, width in actual_patch_sequence)
+    next_cycle_boundary_q = cycle_length_q
+    convergence_window = params.get("convergence_window", 10)
+    cycle_boundary_points = deque([(0.0, 0.0)], maxlen=convergence_window + 1)
+    min_cycles_for_check = params.get("convergence_min_cycles", 5)
 
     while sim.mean_front_position < params["length"]:
         did_step, boundary_hit = sim.step()
         if not did_step or boundary_hit:
             break
-
-        if sim.mean_front_position > min_q_for_convergence_check:
-            df = tracker.get_dataframe()
-            if len(df) > params["convergence_window"]:
-                current_running_avg = df["front_speed"].expanding().mean().iloc[-1]
-                running_avg_history.append(current_running_avg)
-                if len(running_avg_history) == params["convergence_window"]:
-                    history_mean = np.mean(running_avg_history)
-                    if history_mean > 1e-9:
-                        coeff_of_variation = (
-                            np.std(running_avg_history, ddof=1) / history_mean
-                        )
-                        if coeff_of_variation < params["convergence_threshold"]:
-                            break
+        if cycle_length_q > 0 and sim.mean_front_position >= next_cycle_boundary_q:
+            cycle_boundary_points.append((sim.time, sim.mean_front_position))
+            next_cycle_boundary_q += cycle_length_q
+            if len(cycle_boundary_points) > min_cycles_for_check:
+                times = np.array([p[0] for p in cycle_boundary_points])
+                positions = np.array([p[1] for p in cycle_boundary_points])
+                delta_t = np.diff(times)
+                delta_q = np.diff(positions)
+                cycle_speeds = np.divide(
+                    delta_q, delta_t, out=np.zeros_like(delta_q), where=delta_t != 0
+                )
+                if len(cycle_speeds) >= convergence_window:
+                    speed_mean = np.mean(cycle_speeds)
+                    if (
+                        speed_mean > 1e-9
+                        and (np.std(cycle_speeds, ddof=1) / speed_mean)
+                        < params["convergence_threshold"]
+                    ):
+                        break
 
     df_history = tracker.get_dataframe()
-    stats_df = df_history[df_history["mean_front_q"] > params["warmup_q_for_stats"]]
+    warmup_cycles = params.get("warmup_cycles_for_stats", 4)
+    warmup_q = warmup_cycles * cycle_length_q
+    stats_df = df_history[df_history["mean_front_q"] > warmup_q]
+
+    task_id = params.get("task_id", "unknown_task")
+    timeseries_dir = os.path.join(project_root, "data", campaign_id, "timeseries")
+    os.makedirs(timeseries_dir, exist_ok=True)
+    ts_path = os.path.join(timeseries_dir, f"ts_{task_id}.json.gz")
+    if not df_history.empty:
+        df_history.to_json(ts_path, orient="records", compression="gzip")
 
     results = {
         "avg_front_speed": (
@@ -98,16 +143,45 @@ def run_spatial_fluctuation_analysis(params):
         "var_front_speed": (
             stats_df["front_speed"].var(ddof=1) if len(stats_df) > 1 else 0.0
         ),
-        "avg_rho_M": stats_df["mutant_fraction"].mean() if not stats_df.empty else 0.0,
+        "avg_rho_M": (
+            stats_df["mutant_fraction"].mean() if not stats_df.empty else 0.0
+        ),
         "var_rho_M": (
             stats_df["mutant_fraction"].var(ddof=1) if len(stats_df) > 1 else 0.0
         ),
         "final_q": sim.mean_front_position,
+        "patch0_width": patch0_width,
+        "patch1_width": patch1_width,
     }
     return results
 
 
-# ... [Other worker functions remain unchanged] ...
+def run_timeseries_from_pure_mutant_sim(params):
+    manager = MetricsManager()
+    # The config sets initial_mutant_patch_size = width
+    sim = GillespieSimulation(
+        width=params["width"],
+        length=params["length"],
+        b_m=params["b_m"],
+        k_total=params["k_total"],
+        phi=params["phi"],
+        initial_condition_type="patch",
+        initial_mutant_patch_size=params["width"],
+        metrics_manager=manager,
+    )
+
+    tracker = TimeSeriesTracker(sim, log_interval=params["log_interval"])
+    manager.add_tracker(tracker)
+
+    max_time = params.get("max_sim_time", 5000.0)
+    while sim.time < max_time:
+        active, boundary_hit = sim.step()
+        if not active or boundary_hit:
+            break
+
+    return {"timeseries": tracker.get_timeseries()}
+
+
 def run_transient_survival_analysis(params):
     sim = GillespieSimulation(
         width=params["width"],
@@ -156,6 +230,36 @@ def run_calibration_sim(params):
     return {"trajectory": tracker.get_trajectory()}
 
 
+def run_timeseries_from_pure_state_sim(params):
+    """
+    Runs a simulation from a pure initial state to measure relaxation dynamics.
+    """
+    manager = MetricsManager()
+    sim = GillespieSimulation(
+        width=params["width"],
+        length=params["length"],
+        b_m=params["b_m"],
+        k_total=params["k_total"],
+        phi=params["phi"],
+        initial_condition_type="patch",
+        initial_mutant_patch_size=params["initial_mutant_patch_size"],
+        metrics_manager=manager,
+    )
+
+    tracker = TimeSeriesTracker(sim, log_interval=params["log_interval"])
+    manager.add_tracker(tracker)
+    manager.register_simulation(sim)
+
+    max_time = params.get("max_sim_time", 5000.0)
+    while sim.time < max_time:
+        active, boundary_hit = sim.step()
+        if not active or boundary_hit:
+            break
+        # Hook is called inside sim.step()
+
+    return {"timeseries": tracker.get_timeseries()}
+
+
 def run_diffusion_sim(params):
     sim = GillespieSimulation(
         width=params["width"],
@@ -193,6 +297,7 @@ def run_structure_analysis_sim(params):
         sample_interval=params["sample_interval"],
     )
     manager.add_tracker(tracker)
+    manager.register_simulation(sim)
     manager.initialize_all()
     while sim.time < (
         params["warmup_time"] + params["num_samples"] * params["sample_interval"] + 100
@@ -213,19 +318,24 @@ def run_perturbation_sim(params):
         phi=params["phi"],
         initial_condition_type=params.get("initial_condition_type", "mixed"),
     )
-    tracker = FrontDynamicsTracker(sim, log_q_interval=params["sample_interval"])
-    pulse_on = False
+    manager = MetricsManager()
+    tracker = TimeSeriesTracker(sim, sample_interval=params["sample_interval"])
+    manager.add_tracker(tracker)
+    manager.register_simulation(sim)
+
+    pulse_state = "pre_pulse"
+    pulse_end_time = params["pulse_start_time"] + params["pulse_duration"]
+
     while sim.time < params["total_run_time"]:
-        if not pulse_on and sim.time >= params["pulse_start_time"]:
-            sim.set_switching_rate(params["k_total_pulse"])
-            pulse_on = True
-        if pulse_on and sim.time >= (
-            params["pulse_start_time"] + params["pulse_duration"]
-        ):
-            sim.set_switching_rate(params["k_total"])
-            pulse_on = False
+        if pulse_state == "pre_pulse" and sim.time >= params["pulse_start_time"]:
+            sim.set_switching_rate(params["k_total_pulse"], sim.phi_base)
+            pulse_state = "in_pulse"
+        elif pulse_state == "in_pulse" and sim.time >= pulse_end_time:
+            sim.set_switching_rate(sim.k_total_base, sim.phi_base)
+            pulse_state = "post_pulse"
+
         did_step, boundary_hit = sim.step()
-        tracker.after_step_hook()
+        manager.after_step_hook()
         if not did_step or boundary_hit:
             break
     df = tracker.get_dataframe()
@@ -239,6 +349,7 @@ RUN_MODES = {
     "perturbation": run_perturbation_sim,
     "spatial_fluctuation_analysis": run_spatial_fluctuation_analysis,
     "transient_survival_analysis": run_transient_survival_analysis,
+    "timeseries_from_pure_state": run_timeseries_from_pure_state_sim,  # New entry
     "correlation_analysis": run_structure_analysis_sim,
     "steady_state": run_structure_analysis_sim,
 }

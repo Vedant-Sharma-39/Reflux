@@ -323,6 +323,32 @@ class FrontDynamicsTracker(MetricTracker):
         return pd.DataFrame(self.history)
 
 
+class TimeSeriesTracker(MetricTracker):
+    """
+    Creates a detailed time-series of key metrics by logging at fixed time intervals.
+    Used for perturbation and relaxation dynamics experiments.
+    """
+
+    def __init__(self, sim, log_interval: float = 1.0):
+        super().__init__(sim)
+        self.log_interval = log_interval
+        self.next_log_time = 0.0
+        self.history = []
+
+    def after_step_hook(self):
+        if self.sim.time >= self.next_log_time:
+            self.history.append(
+                {
+                    "time": self.sim.time,
+                    "mutant_fraction": self.sim.mutant_fraction,
+                }
+            )
+            self.next_log_time += self.log_interval
+
+    def get_timeseries(self):
+        return self.history
+
+
 # ==============================================================================
 # 5. ORCHESTRATOR CLASS
 # ==============================================================================

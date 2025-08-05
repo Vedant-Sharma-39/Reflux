@@ -1,66 +1,74 @@
 #!/bin/bash
 # FILE: scripts/run_chunk.sh
-# This script is executed by each Slurm task.
-# It runs a "chunk" of simulations serially by calling the unified worker.
+# [v3 - FILE-FRUGAL, RAW OUTPUT]
+# This script runs a chunk of simulations and writes output to temporary
+# chunk files in a dedicated 'raw' directory.
 
 set -euo pipefail
 
-# --- 1. Validate Input Arguments ---
 if [ "$#" -ne 4 ]; then
     echo "Error: Incorrect number of arguments." >&2
-    echo "Usage: $0 <task_file> <output_dir> <project_root> <sims_per_task>"
+    echo "Usage: $0 <task_file> <output_dir_base> <project_root> <sims_per_task>"
     exit 1
 fi
 TASK_FILE="$1"
-OUTPUT_DIR="$2"
+OUTPUT_DIR_BASE="$2"
 PROJECT_ROOT="$3"
 SIMS_PER_TASK="$4"
 
-echo "--- Unified Worker Chunk ${SLURM_ARRAY_TASK_ID} Started on $(hostname) ---"
+# --- ### NEW: Define temporary RAW output directories and files ### ---
+CAMPAIGN_ID=$(basename "$OUTPUT_DIR_BASE")
+RAW_RESULTS_DIR="${PROJECT_ROOT}/data/${CAMPAIGN_ID}/results_raw"
+RAW_TIMESERIES_DIR="${PROJECT_ROOT}/data/${CAMPAIGN_ID}/timeseries_raw"
+mkdir -p "${RAW_RESULTS_DIR}" "${RAW_TIMESERIES_DIR}"
 
-# --- 2. Calculate Simulation Range ---
+CHUNK_ID="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+SUMMARY_CHUNK_FILE="${RAW_RESULTS_DIR}/results_chunk_${CHUNK_ID}.jsonl"
+TIMESERIES_CHUNK_FILE="${RAW_TIMESERIES_DIR}/ts_chunk_${CHUNK_ID}.jsonl"
+
+echo "--- Worker Chunk ${SLURM_ARRAY_TASK_ID} Started ---"
+echo "Writing raw summary to: ${SUMMARY_CHUNK_FILE}"
+
 START_SIM_NUM=$(( (SLURM_ARRAY_TASK_ID - 1) * SIMS_PER_TASK + 1 ))
 END_SIM_NUM=$(( SLURM_ARRAY_TASK_ID * SIMS_PER_TASK ))
-echo "Processing lines ${START_SIM_NUM} to ${END_SIM_NUM} from task file."
 
-# --- 3. Set up Environment ---
 export PYTHONPATH="${PYTHONPATH}:${PROJECT_ROOT}/src"
-# *** THIS IS THE KEY CHANGE: POINT TO THE UNIFIED WORKER ***
 WORKER_SCRIPT="${PROJECT_ROOT}/src/worker.py"
 cd "${PROJECT_ROOT}" || exit 1
 
 TOTAL_LINES_IN_FILE=$(wc -l < "${TASK_FILE}")
+DELIMITER="---WORKER_PAYLOAD_SEPARATOR---"
 
-# --- 4. Main Execution Loop ---
 for (( SIM_NUM=START_SIM_NUM; SIM_NUM<=END_SIM_NUM; SIM_NUM++ )); do
     if [ ${SIM_NUM} -gt ${TOTAL_LINES_IN_FILE} ]; then
-        echo "Reached end of task file. Worker exiting."
+        echo "Reached end of task file."
         break
     fi
-
     PARAMS_JSON=$(sed -n "${SIM_NUM}p" "${TASK_FILE}" || true)
     if [ -z "${PARAMS_JSON}" ]; then
         continue
     fi
     
-    TASK_ID_PRECHECK=$(echo "${PARAMS_JSON}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('task_id', 'unknown'))")
-    OUTPUT_FILE="${OUTPUT_DIR}/result_${TASK_ID_PRECHECK}.json"
-    if [ -f "${OUTPUT_FILE}" ]; then
-        echo "Result for task line ${SIM_NUM} (ID: ${TASK_ID_PRECHECK}) exists. Skipping."
-        continue
-    fi
-
-    echo "Running sim for line ${SIM_NUM}..."
-    RESULT_JSON=$(python3 "${WORKER_SCRIPT}" --params "${PARAMS_JSON}")
-    
-    if [ -z "${RESULT_JSON}" ]; then
+    WORKER_OUTPUT=$(python3 "${WORKER_SCRIPT}" --params "${PARAMS_JSON}" || true)
+    if [ -z "${WORKER_OUTPUT}" ]; then
         echo "Warning: Python worker for line ${SIM_NUM} produced no output."
         continue
     fi
+    
+    SUMMARY_JSON=$(echo "${WORKER_OUTPUT}" | awk -v RS="${DELIMITER}" 'NR==1')
+    TIMESERIES_JSON=$(echo "${WORKER_OUTPUT}" | awk -v RS="${DELIMITER}" 'NR==2')
 
-    TASK_ID=$(echo "${RESULT_JSON}" | python3 -c "import sys, json; print(json.load(sys.stdin).get('task_id', 'unknown'))")
-    SAVED_OUTPUT_FILE="${OUTPUT_DIR}/result_${TASK_ID}.json"
-    echo "${RESULT_JSON}" > "${SAVED_OUTPUT_FILE}"
+    echo "${SUMMARY_JSON}" >> "${SUMMARY_CHUNK_FILE}"
+    
+    # Only write timeseries if it's not empty
+    if [[ $(echo "${TIMESERIES_JSON}" | jq '.timeseries | length') -gt 0 ]]; then
+        echo "${TIMESERIES_JSON}" >> "${TIMESERIES_CHUNK_FILE}"
+    fi
 done
 
-echo "--- Unified Worker Chunk ${SLURM_ARRAY_TASK_ID} Finished ---"
+# Compress timeseries chunk if it was created
+if [ -f "${TIMESERIES_CHUNK_FILE}" ]; then
+    gzip "${TIMESERIES_CHUNK_FILE}"
+fi
+
+echo "--- Worker Chunk ${SLURM_ARRAY_TASK_ID} Finished ---"
