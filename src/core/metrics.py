@@ -1,5 +1,5 @@
 # FILE: src/core/metrics.py
-# A collection of modular metric trackers compatible with the unified GillespieSimulation model. [v2 - Improved Manager Logic & API Consistency]
+# A collection of modular metric trackers. [v5 - Corrected Stop Condition]
 
 import numpy as np
 import pandas as pd
@@ -10,18 +10,22 @@ if TYPE_CHECKING:
 
 
 class MetricTracker:
-    """Abstract base class for all metric trackers.
+    """Abstract base class for all metric trackers."""
 
-    Each tracker is designed to be attached to a simulation instance and will
-    be notified of each step via the `after_step_hook` method.
-    """
-
-    def __init__(self, sim: "GillespieSimulation"):
+    def __init__(self, sim: "GillespieSimulation", **kwargs):
         self.sim = sim
+
+    def initialize(self):
+        """Called by the manager once the simulation is fully constructed."""
+        pass
 
     def after_step_hook(self):
         """Called by the MetricsManager after each simulation step."""
         pass
+
+    def is_done(self) -> bool:
+        """Allows a tracker to signal that the simulation can stop early."""
+        return False
 
     def finalize(self) -> Dict[str, Any]:
         """Called at the end of a simulation run to collect results."""
@@ -31,17 +35,32 @@ class MetricTracker:
 class SectorWidthTracker(MetricTracker):
     """For 'calibration' runs. Measures the width of the mutant sector over front position."""
 
-    def __init__(self, sim: "GillespieSimulation", capture_interval: float = 1.0):
-        super().__init__(sim)
+    def __init__(
+        self, sim: "GillespieSimulation", capture_interval: float = 1.0, **kwargs
+    ):
+        super().__init__(sim=sim, **kwargs)
         self.capture_interval = capture_interval
         self.next_capture_q = 0.0
         self.width_trajectory: List[Tuple[float, float]] = []
+        self._is_finished = False
+
+    def initialize(self):
+        self.after_step_hook()
+
+    def is_done(self) -> bool:
+        return self._is_finished
 
     def after_step_hook(self):
         mean_q = self.sim.mean_front_position
         if mean_q >= self.next_capture_q:
-            self.width_trajectory.append((mean_q, self.sim.mutant_sector_width))
-            # In case of large time steps, advance to the next multiple of the interval
+            width = self.sim.mutant_sector_width
+            self.width_trajectory.append((mean_q, width))
+
+            # [CRITICAL FIX] Correctly check for extinction (width=0) or fixation (width=sim.width).
+            # This will now stop the simulation as soon as the sector vanishes.
+            if width <= 0 or width >= self.sim.width:
+                self._is_finished = True
+
             self.next_capture_q = (
                 np.floor(mean_q / self.capture_interval) + 1
             ) * self.capture_interval
@@ -53,11 +72,16 @@ class SectorWidthTracker(MetricTracker):
 class InterfaceRoughnessTracker(MetricTracker):
     """For 'diffusion' runs. Measures W², the squared width of the front."""
 
-    def __init__(self, sim: "GillespieSimulation", capture_interval: float = 0.5):
-        super().__init__(sim)
+    def __init__(
+        self, sim: "GillespieSimulation", capture_interval: float = 0.5, **kwargs
+    ):
+        super().__init__(sim=sim, **kwargs)
         self.capture_interval = capture_interval
         self.next_capture_q = 0.0
         self.roughness_history: List[Tuple[float, float]] = []
+
+    def initialize(self):
+        self.after_step_hook()
 
     def after_step_hook(self):
         mean_q = self.sim.mean_front_position
@@ -72,7 +96,7 @@ class InterfaceRoughnessTracker(MetricTracker):
 
 
 class SteadyStatePropertiesTracker(MetricTracker):
-    """For 'structure_analysis'. Measures mean properties after a warmup time."""
+    """For 'phase_diagram' etc. Measures mean properties after a warmup time."""
 
     def __init__(
         self,
@@ -80,23 +104,26 @@ class SteadyStatePropertiesTracker(MetricTracker):
         warmup_time: float,
         num_samples: int,
         sample_interval: float,
+        **kwargs
     ):
-        super().__init__(sim)
+        super().__init__(sim=sim, **kwargs)
         if sample_interval <= 0:
             raise ValueError("sample_interval must be positive.")
-        self.warmup_time = warmup_time
-        self.num_samples = num_samples
-        self.sample_interval = sample_interval
+        self.warmup_time, self.num_samples, self.sample_interval = (
+            warmup_time,
+            num_samples,
+            sample_interval,
+        )
         self.next_sample_time = self.warmup_time
         self.samples_taken = 0
         self.mutant_fraction_samples: List[float] = []
         self.interface_density_samples: List[float] = []
 
+    def is_done(self) -> bool:
+        return self.samples_taken >= self.num_samples
+
     def after_step_hook(self):
-        if (
-            self.samples_taken < self.num_samples
-            and self.sim.time >= self.next_sample_time
-        ):
+        if self.sim.time >= self.next_sample_time and not self.is_done():
             self.mutant_fraction_samples.append(self.sim.mutant_fraction)
             self.interface_density_samples.append(self.sim.interface_density)
             self.next_sample_time += self.sample_interval
@@ -107,86 +134,83 @@ class SteadyStatePropertiesTracker(MetricTracker):
             "avg_rho_M": (
                 np.mean(self.mutant_fraction_samples)
                 if self.mutant_fraction_samples
-                else 0.0
+                else np.nan
             ),
             "var_rho_M": (
                 np.var(self.mutant_fraction_samples, ddof=1)
                 if len(self.mutant_fraction_samples) > 1
-                else 0.0
+                else np.nan
             ),
             "avg_interface_density": (
                 np.mean(self.interface_density_samples)
                 if self.interface_density_samples
-                else 0.0
+                else np.nan
             ),
         }
 
 
 class TimeSeriesTracker(MetricTracker):
-    """For 'relaxation' and 'perturbation' runs. Logs composition over time."""
+    """For 'relaxation' runs. Logs composition over time."""
 
-    def __init__(self, sim: "GillespieSimulation", log_interval: float):
-        super().__init__(sim)
+    def __init__(self, sim: "GillespieSimulation", log_interval: float, **kwargs):
+        super().__init__(sim=sim, **kwargs)
         if log_interval <= 0:
             raise ValueError("log_interval must be positive.")
         self.log_interval = log_interval
         self.next_log_time = 0.0
         self.history: List[Dict] = []
 
+    def initialize(self):
+        self.after_step_hook()
+
     def after_step_hook(self):
-        if self.sim.time >= self.next_log_time:
+        while self.sim.time >= self.next_log_time:
             self.history.append(
-                {"time": self.sim.time, "mutant_fraction": self.sim.mutant_fraction}
+                {
+                    "time": self.next_log_time,
+                    "mutant_fraction": self.sim.mutant_fraction,
+                }
             )
-            self.next_log_time = (
-                np.floor(self.sim.time / self.log_interval) + 1
-            ) * self.log_interval
+            self.next_log_time += self.log_interval
 
     def finalize(self) -> Dict[str, Any]:
         return {"timeseries": self.history}
 
 
 class FrontDynamicsTracker(MetricTracker):
-    """For 'spatial_fluctuation_analysis'. Logs properties over front position."""
+    """For 'bet_hedging' runs. Logs properties over front position."""
 
-    def __init__(self, sim: "GillespieSimulation", log_q_interval: float):
-        super().__init__(sim)
+    def __init__(self, sim: "GillespieSimulation", log_q_interval: float, **kwargs):
+        super().__init__(sim=sim, **kwargs)
         if log_q_interval <= 0:
             raise ValueError("log_q_interval must be positive.")
         self.log_q_interval = log_q_interval
         self.next_log_q = 0.0
         self.history: List[Dict] = []
-        self.last_log_time = 0.0
-        self.last_log_q = 0.0
+        self.last_log_time, self.last_log_q = 0.0, 0.0
+
+    def initialize(self):
+        self.after_step_hook()
 
     def after_step_hook(self):
         current_q = self.sim.mean_front_position
-        if current_q >= self.next_log_q:
+        while current_q >= self.next_log_q:
             current_time = self.sim.time
-            delta_q = current_q - self.last_log_q
+            delta_q = self.next_log_q - self.last_log_q
             delta_t = current_time - self.last_log_time
             speed = (delta_q / delta_t) if delta_t > 1e-9 else 0.0
-
             self.history.append(
                 {
                     "time": current_time,
-                    "mean_front_q": current_q,
+                    "mean_front_q": self.next_log_q,
                     "mutant_fraction": self.sim.mutant_fraction,
                     "front_speed": speed,
                 }
             )
-
-            self.last_log_q, self.last_log_time = current_q, current_time
-            self.next_log_q = (
-                np.floor(current_q / self.log_q_interval) + 1
-            ) * self.log_q_interval
+            self.last_log_q, self.last_log_time = self.next_log_q, current_time
+            self.next_log_q += self.log_q_interval
 
     def finalize(self) -> Dict[str, Any]:
-        """Returns the collected data as a dictionary.
-
-        The calling code can easily convert this to a pandas DataFrame via:
-        `pd.DataFrame(results['front_dynamics'])`
-        """
         return {"front_dynamics": self.history}
 
 
@@ -194,50 +218,42 @@ class MetricsManager:
     """Manages a collection of metric trackers for a single simulation run."""
 
     def __init__(self):
-        """Initializes the manager.
-
-        The workflow is:
-        1. Instantiate MetricsManager.
-        2. Use `add_tracker` to register tracker configurations.
-        3. In the simulation's __init__, call `register_simulation` to
-           instantiate trackers with the simulation instance.
-        """
         self._tracker_configs: List[Tuple[Type[MetricTracker], Dict[str, Any]]] = []
         self.trackers: List[MetricTracker] = []
         self._is_initialized = False
 
     def add_tracker(self, tracker_class: Type[MetricTracker], **kwargs):
-        """Registers a tracker's class and its configuration arguments.
-
-        The tracker itself will be instantiated later when register_simulation is called.
-        """
         if self._is_initialized:
-            raise RuntimeError(
-                "Cannot add new trackers after simulation has been registered."
-            )
+            raise RuntimeError("Cannot add trackers after simulation registration.")
         self._tracker_configs.append((tracker_class, kwargs))
 
     def register_simulation(self, sim: "GillespieSimulation"):
-        """Instantiates all configured trackers with the given simulation instance."""
         if self._is_initialized:
-            raise RuntimeError("Simulation has already been registered.")
-
+            raise RuntimeError("Simulation already registered.")
         for tracker_class, kwargs in self._tracker_configs:
             self.trackers.append(tracker_class(sim=sim, **kwargs))
         self._is_initialized = True
 
+    def initialize_all(self):
+        if not self._is_initialized:
+            return
+        for tracker in self.trackers:
+            tracker.initialize()
+
     def after_step_hook(self):
-        """Propagates the after-step hook to all registered trackers."""
         if not self._is_initialized:
             return
         for tracker in self.trackers:
             tracker.after_step_hook()
 
+    def is_done(self) -> bool:
+        if not self._is_initialized:
+            return False
+        return any(tracker.is_done() for tracker in self.trackers)
+
     def finalize(self) -> Dict[str, Any]:
-        """Collects and aggregates results from all trackers."""
         if not self._is_initialized:
             return {}
-
         all_results = {}
         for tracker in self.trackers:
             all_results.update(tracker.finalize())

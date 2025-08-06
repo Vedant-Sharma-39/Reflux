@@ -31,7 +31,7 @@ def main():
     # --- Find the task file ---
     campaign_id = None
     try:
-        from src.config import EXPERIMENTS
+        from src.config_loader import EXPERIMENTS
 
         campaign_id = EXPERIMENTS[args.experiment_name]["CAMPAIGN_ID"]
     except (ImportError, KeyError):

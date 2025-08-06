@@ -1,3 +1,5 @@
+# FILE: scripts/paper_figures/fig1_boundary_analysis.py
+
 import argparse
 import os
 import pandas as pd
@@ -6,56 +8,76 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 from scipy.stats import linregress
+from tqdm import tqdm
+
+
+def get_project_root():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def process_trajectories(df, column_name):
     """Safely parse JSON string trajectories into lists of floats."""
     trajectories = []
-    for item in df[column_name]:
+    # Use tqdm for visual feedback on long parsing jobs
+    for item in tqdm(df[column_name], desc=f"Parsing '{column_name}'"):
+        if pd.isna(item):
+            trajectories.append(None)
+            continue
         try:
-            # The data is stored as a string representation of a list
             trajectories.append(json.loads(item))
         except (json.JSONDecodeError, TypeError):
             trajectories.append(None)
     return trajectories
 
 
-def calculate_deff(df_calib):
-    """Calculates effective diffusion coefficient from sector width trajectories."""
-    print("Calculating D_eff from calibration data...")
+def calculate_drift_diffusion(df_calib):
+    """Calculates drift velocity and diffusion coefficient from sector trajectories."""
+    print("Analyzing sector drift and diffusion from 'calibration' data...")
     df_calib["s"] = df_calib["b_m"] - 1.0
     df_calib["trajectory_data"] = process_trajectories(df_calib, "trajectory")
 
-    deff_results = []
-    for _, row in df_calib.dropna(subset=["trajectory_data"]).iterrows():
-        q_vals = np.array([t[0] for t in row["trajectory_data"]])
-        width_vals = np.array([t[1] for t in row["trajectory_data"]])
+    analysis_results = []
+    for params, group in tqdm(
+        df_calib.groupby(["s"]), desc="Calculating D_eff and v_drift"
+    ):
+        s = params
+        all_points = []
+        for _, row in group.dropna(subset=["trajectory_data"]).iterrows():
+            q_vals = np.array([t[0] for t in row["trajectory_data"]])
+            width_vals = np.array([t[1] for t in row["trajectory_data"]])
+            if len(q_vals) > 5:
+                # Drift (v) is related to the slope of width vs q
+                v_slope, _, v_r, _, _ = linregress(q_vals, width_vals)
+                # Diffusion (D) is related to the slope of width^2 vs q
+                d_slope, _, d_r, _, _ = linregress(q_vals, width_vals**2)
+                if d_r**2 > 0.8:  # Filter for good linear fits for diffusion
+                    analysis_results.append(
+                        {"s": s, "v_drift": v_slope, "D_eff": d_slope}
+                    )
 
-        # We expect width^2 to be linear with q. Slope is proportional to D_eff.
-        if len(q_vals) > 5:
-            slope, intercept, r_value, _, _ = linregress(q_vals, width_vals**2)
-            if r_value**2 > 0.85:  # Filter for good linear fits
-                deff_results.append({"s": row["s"], "D_eff": slope})
-
-    return pd.DataFrame(deff_results)
+    return pd.DataFrame(analysis_results)
 
 
-def analyze_roughness(df_diff):
+def analyze_roughness(df_kpz):
     """Analyzes interface roughness saturation from diffusion data."""
-    print("Analyzing interface roughness from diffusion data...")
-    df_diff["s"] = df_diff["b_m"] - 1.0
-    df_diff["roughness_data"] = process_trajectories(df_diff, "roughness_trajectory")
+    print("Analyzing interface roughness from 'diffusion' data...")
+    df_kpz["s"] = df_kpz["b_m"] - 1.0
+    df_kpz["roughness_data"] = process_trajectories(df_kpz, "roughness_trajectory")
 
     saturation_results = []
-    for _, row in df_diff.dropna(subset=["roughness_data"]).iterrows():
-        q_vals = np.array([t[0] for t in row["roughness_data"]])
-        w2_vals = np.array([t[1] for t in row["roughness_data"]])
-
-        # Use the last 25% of the data to estimate saturation
-        if len(w2_vals) > 20:
-            w2_sat = np.mean(w2_vals[-len(w2_vals) // 4 :])
+    for params, group in tqdm(
+        df_kpz.groupby(["s", "width"]), desc="Calculating saturated roughness"
+    ):
+        s, width = params
+        w2_sats = []
+        for _, row in group.dropna(subset=["roughness_data"]).iterrows():
+            w2_vals = np.array([t[1] for t in row["roughness_data"]])
+            # Use the last 25% of the data to estimate saturation
+            if len(w2_vals) > 20:
+                w2_sats.append(np.mean(w2_vals[-len(w2_vals) // 4 :]))
+        if w2_sats:
             saturation_results.append(
-                {"s": row["s"], "width": row["width"], "W2_sat": w2_sat}
+                {"s": s, "L": width, "W2_sat_mean": np.mean(w2_sats)}
             )
 
     return pd.DataFrame(saturation_results)
@@ -63,98 +85,119 @@ def analyze_roughness(df_diff):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate plots for Figure 1: Boundary Dynamics."
+        description="Generate Figure 1: Boundary Dynamics & KPZ Scaling."
     )
     parser.add_argument(
-        "campaign_ids",
-        nargs="+",
-        help="Campaign IDs for calibration and diffusion runs.",
+        "calib_campaign",
+        help="Campaign ID for calibration/drift-diffusion runs (boundary_analysis).",
+    )
+    parser.add_argument(
+        "kpz_campaign", help="Campaign ID for KPZ scaling runs (kpz_scaling)."
     )
     args = parser.parse_args()
 
-    # --- Load Data ---
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    project_root = get_project_root()
 
-    df_calib = pd.DataFrame()
-    df_diff = pd.DataFrame()
+    # Load Data
+    path_calib = os.path.join(
+        project_root,
+        "data",
+        args.calib_campaign,
+        "analysis",
+        f"{args.calib_campaign}_summary_aggregated.csv",
+    )
+    path_kpz = os.path.join(
+        project_root,
+        "data",
+        args.kpz_campaign,
+        "analysis",
+        f"{args.kpz_campaign}_summary_aggregated.csv",
+    )
 
-    for campaign_id in args.campaign_ids:
-        summary_path = os.path.join(
-            project_root,
-            "data",
-            campaign_id,
-            "analysis",
-            f"{campaign_id}_summary_aggregated.csv",
+    if not os.path.exists(path_calib) or not os.path.exists(path_kpz):
+        sys.exit(
+            f"Error: Required data not found. Check paths:\n{path_calib}\n{path_kpz}"
         )
-        if not os.path.exists(summary_path):
-            print(f"Warning: Summary file not found for {campaign_id}. Skipping.")
-            continue
 
-        df_temp = pd.read_csv(summary_path)
-        if df_temp["run_mode"].iloc[0] == "calibration":
-            df_calib = pd.concat([df_calib, df_temp], ignore_index=True)
-        elif df_temp["run_mode"].iloc[0] == "diffusion":
-            df_diff = pd.concat([df_diff, df_temp], ignore_index=True)
+    df_calib = pd.read_csv(path_calib)
+    df_kpz = pd.read_csv(path_kpz)
 
-    if df_calib.empty or df_diff.empty:
-        print("Error: Must provide data for both calibration and diffusion campaigns.")
-        return
+    # Process Data
+    drift_diff_df = calculate_drift_diffusion(df_calib)
+    roughness_df = analyze_roughness(df_kpz)
 
-    # --- Process Data ---
-    deff_df = calculate_deff(df_calib)
-    roughness_df = analyze_roughness(df_diff)
-
-    # --- Create Plots ---
+    # Create Plots
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.5)
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7), constrained_layout=True)
     fig.suptitle("Figure 1: Boundary Dynamics and Front Morphology", fontsize=20)
 
-    # Plot 1: D_eff vs s
+    # Panel A: Drift and Diffusion vs Selection
+    axA = axes[0]
     sns.lineplot(
-        data=deff_df,
+        data=drift_diff_df,
         x="s",
         y="D_eff",
-        ax=axes[0],
+        ax=axA,
         marker="o",
-        errorbar="sd",
-        err_style="bars",
+        label=r"$D_{eff}$ (Diffusion)",
+        color="crimson",
     )
-    axes[0].set_title(r"Effective Diffusion Coefficient of Boundary")
-    axes[0].set_xlabel("Selection Coefficient, $s = b_m - 1$")
-    axes[0].set_ylabel(r"Effective Diffusion, $D_{eff}$")
-    axes[0].axhline(0, color="grey", linestyle="--", lw=1.5)
-    axes[0].axvline(0, color="grey", linestyle="--", lw=1.5)
+    axA.set_ylabel(r"Effective Diffusion, $D_{eff}$", color="crimson")
+    axA.tick_params(axis="y", labelcolor="crimson")
 
-    # Plot 2: Saturated Roughness W^2 vs System Width L
-    roughness_df["L"] = roughness_df["width"]
+    axA2 = axA.twinx()
     sns.lineplot(
-        data=roughness_df[roughness_df["s"] == 0.0],
+        data=drift_diff_df,
+        x="s",
+        y="v_drift",
+        ax=axA2,
+        marker="s",
+        label=r"$v_{drift}$ (Drift)",
+        color="navy",
+    )
+    axA2.plot(
+        axA2.get_xlim(), axA2.get_xlim(), "k--", alpha=0.6, label="v = s"
+    )  # Theory line
+    axA2.set_ylabel(r"Drift Velocity, $v_{drift}$", color="navy")
+    axA2.tick_params(axis="y", labelcolor="navy")
+
+    axA.set_title("Effective Boundary Motion")
+    axA.set_xlabel("Selection Coefficient, $s = b_m - 1$")
+    fig.legend(loc="upper center", bbox_to_anchor=(0.28, 0.95), ncol=3)
+
+    # Panel B: Saturated Roughness W^2 vs System Width L
+    axB = axes[1]
+    # Plot neutral case
+    sns.lineplot(
+        data=roughness_df[np.isclose(roughness_df["s"], 0.0)],
         x="L",
-        y="W2_sat",
-        ax=axes[1],
+        y="W2_sat_mean",
+        ax=axB,
         marker="o",
         label=r"$s=0.0$ (Neutral)",
     )
+    # Plot deleterious case (average over s < 0)
     sns.lineplot(
-        data=roughness_df[roughness_df["s"] < -0.1],
+        data=roughness_df[roughness_df["s"] < 0.0],
         x="L",
-        y="W2_sat",
-        ax=axes[1],
+        y="W2_sat_mean",
+        ax=axB,
         marker="s",
-        label=r"$s < -0.1$ (Deleterious)",
+        label=r"$s < 0$ (Deleterious)",
     )
-    axes[1].set_title(r"Interface Roughness Scaling (KPZ)")
-    axes[1].set_xlabel("System Width, $L$")
-    axes[1].set_ylabel(r"Saturated Roughness, $W^2_{sat}$")
-    axes[1].set_xscale("log")
-    axes[1].set_yscale("log")
-    axes[1].legend()
 
-    # --- Save Figure ---
-    output_dir = os.path.join(project_root, "data", args.campaign_ids[0], "analysis")
+    axB.set_title(r"Interface Roughness Scaling (KPZ)")
+    axB.set_xlabel("System Width, $L$")
+    axB.set_ylabel(r"Saturated Roughness, $\langle W^2_{sat} \rangle$")
+    axB.set_xscale("log")
+    axB.set_yscale("log")
+    axB.legend()
+
+    # Save Figure
+    output_dir = os.path.join(project_root, "data", args.calib_campaign, "analysis")
     output_path = os.path.join(output_dir, "figure1_boundary_analysis.png")
     plt.savefig(output_path, dpi=300)
-    print(f"Figure 1 saved to {output_path}")
+    print(f"\nFigure 1 saved to {output_path}")
 
 
 if __name__ == "__main__":
