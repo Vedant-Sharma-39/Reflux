@@ -1,5 +1,5 @@
 # FILE: src/core/model.py
-# The unified Gillespie simulation model. [v18 - Corrected Hex Invariant]
+# The unified Gillespie simulation model. [v24 - Terminology Aligned with Literature]
 
 import numpy as np
 import random
@@ -49,6 +49,7 @@ class SummedRateTree:
 
 
 class GillespieSimulation:
+    # ... (__init__ and other methods are mostly unchanged) ...
     def __init__(
         self, width: int, length: int, b_m: float, k_total: float, phi: float, **kwargs
     ):
@@ -70,6 +71,7 @@ class GillespieSimulation:
         self.wt_front_cells: Dict[Hex, List[Hex]] = {}
         self.m_front_cells: Dict[Hex, List[Hex]] = {}
         self._front_lookup: Set[Hex] = set()
+        self._wt_m_interface_bonds = 0
         self._precompute_env_params(**kwargs)
         self._find_initial_front()
         self.metrics_manager = kwargs.get("metrics_manager")
@@ -83,12 +85,14 @@ class GillespieSimulation:
 
     @property
     def mean_front_position(self) -> float:
+        """The average position of the expanding front along the growth axis (q)."""
         return (
             np.mean([-h.s for h in self._front_lookup]) if self._front_lookup else 0.0
         )
 
     @property
     def mutant_fraction(self) -> float:
+        """The fraction of mutant cells in the entire population (ρ_M)."""
         return (
             self.mutant_cell_count / self.total_cell_count
             if self.total_cell_count > 0
@@ -96,17 +100,35 @@ class GillespieSimulation:
         )
 
     @property
-    def interface_width_sq(self) -> float:
+    def front_roughness_sq(self) -> float:
+        """
+        The squared width of the expanding front (W²), a measure of geometric
+        roughness calculated as the variance of front cell positions.
+        """
         return np.var([-h.s for h in self._front_lookup]) if self._front_lookup else 0.0
 
     @property
-    def interface_density(self) -> float:
-        return len(self._front_lookup)
+    def expanding_front_length(self) -> float:
+        """
+        The number of cells at the population-empty space interface. This serves as a
+        proxy for the effective population size (N_e) at the frontier.
+        """
+        return float(len(self._front_lookup))
+
+    @property
+    def domain_boundary_length(self) -> float:
+        """
+        The total length of the interface between Wild-Type and Mutant domains,
+        a measure of genetic demixing/segregation.
+        """
+        return self._wt_m_interface_bonds / 2.0
 
     @property
     def mutant_sector_width(self) -> float:
+        """The number of mutant cells at the expanding front."""
         return float(len(self.m_front_cells))
 
+    # ... (The rest of the file, including the optimized _execute_event, is unchanged from the previous step) ...
     def _initialize_population(self, ic_type, patch_size):
         pop = {}
         if ic_type == "single_cell":
@@ -129,15 +151,18 @@ class GillespieSimulation:
 
     def _precompute_env_params(self, **kwargs):
         env_map = kwargs.get("environment_map")
-        env_seq = kwargs.get("environment_patch_sequence")
-        if env_map is None or env_seq is None:
+        patch_width = kwargs.get("patch_width")
+        if env_map is None:
             self.environment_map = {0: {"b_wt": 1.0, "b_m": self.global_b_m}}
-            self.patch_sequence = [(0, kwargs.get("patch_width", self.length))]
+            self.patch_sequence = [(0, patch_width or self.length)]
         else:
             self.environment_map = env_map
             self.patch_sequence = (
-                env_seq if isinstance(env_seq, list) else kwargs.get(env_seq, [])
+                [(i % len(env_map), patch_width) for i in range(len(env_map))]
+                if patch_width
+                else []
             )
+
         k_wt_m, k_m_wt = self._calculate_asymmetric_rates(
             self.global_k_total, self.global_phi
         )
@@ -173,13 +198,28 @@ class GillespieSimulation:
                     q_in_cycle += width
                 current_q += cycle_len
 
+    def _calculate_initial_wt_mutant_interface(self) -> int:
+        bond_count = 0
+        for h, cell_type in self.population.items():
+            if cell_type == Empty:
+                continue
+            for neighbor_hex in self._get_neighbors_periodic(h):
+                neighbor_type = self.population.get(neighbor_hex)
+                if (
+                    neighbor_type is not None
+                    and neighbor_type != Empty
+                    and neighbor_type != cell_type
+                ):
+                    bond_count += 1
+        return bond_count
+
     def _find_initial_front(self):
         self.population_snapshot = self.population.copy()
         for h in list(self.population.keys()):
             self._update_events_for_cell(h)
+        self._wt_m_interface_bonds = self._calculate_initial_wt_mutant_interface()
 
     def _get_neighbors_periodic(self, h: Hex) -> list:
-        """[FIX] Correctly recalculate 's' to maintain the q+r+s=0 invariant."""
         unwrapped = h.neighbors()
         wrapped = []
         for n in unwrapped:
@@ -190,7 +230,6 @@ class GillespieSimulation:
             elif q >= self.width:
                 q -= self.width
                 r += self.width
-            # The original `n.s` is now incorrect. Recalculate it.
             s = -q - r
             wrapped.append(Hex(q, r, s))
         return wrapped
@@ -237,7 +276,7 @@ class GillespieSimulation:
                 del self.wt_front_cells[h]
             if h in self.m_front_cells:
                 del self.m_front_cells[h]
-        if cell_type is None:
+        if cell_type is None or cell_type == Empty:
             return
         empty_neighbors = [
             n
@@ -270,23 +309,46 @@ class GillespieSimulation:
                 affected_hexes.add(n)
         if target:
             affected_hexes.add(target)
+
+        interface_delta = 0
+        hex_to_check = target if event_type == "grow" else parent
+        old_type = self.population.get(hex_to_check, Empty)
+
+        for n in self._get_neighbors_periodic(hex_to_check):
+            n_type = self.population.get(n)
+            if n_type is not None and n_type != Empty:
+                if n_type != old_type and old_type != Empty:
+                    interface_delta -= 2
+
         self.population_snapshot = {h: self.population.get(h) for h in affected_hexes}
+
         if event_type == "grow":
-            cell_type = self.population[parent]
-            self.population[target] = cell_type
-            if cell_type == Mutant:
+            new_type = self.population[parent]
+            self.population[target] = new_type
+            if new_type == Mutant:
                 self.mutant_cell_count += 1
             self.total_cell_count += 1
             for n in self._get_neighbors_periodic(target):
                 if n in self.population:
                     affected_hexes.add(n)
         elif event_type == "switch":
-            new_type = Mutant if self.population[parent] == Wildtype else Wildtype
+            old_cell_type = self.population[parent]
+            new_type = Mutant if old_cell_type == Wildtype else Wildtype
             self.population[parent] = new_type
             if new_type == Mutant:
                 self.mutant_cell_count += 1
             else:
                 self.mutant_cell_count -= 1
+
+        new_type = self.population[hex_to_check]
+        for n in self._get_neighbors_periodic(hex_to_check):
+            n_type = self.population.get(n)
+            if n_type is not None and n_type != Empty:
+                if n_type != new_type:
+                    interface_delta += 2
+
+        self._wt_m_interface_bonds += interface_delta
+
         for h in affected_hexes:
             self._update_events_for_cell(h)
 
@@ -305,6 +367,3 @@ class GillespieSimulation:
         self._execute_event(event_type, parent, target)
         boundary_hit = self.mean_front_position >= self.length - 2
         return True, boundary_hit
-
-    def get_correlation_function(self):
-        return []
