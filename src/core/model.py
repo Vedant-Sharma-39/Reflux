@@ -1,5 +1,5 @@
 # FILE: src/core/model.py
-# The unified Gillespie simulation model. [v24 - Terminology Aligned with Literature]
+# The unified Gillespie simulation model. [v28 - Final, Canonically Correct Pointy-Top Logic Ported]
 
 import numpy as np
 import random
@@ -12,7 +12,8 @@ Empty, Wildtype, Mutant = 0, 1, 2
 
 
 class SummedRateTree:
-    # ... (class is unchanged)
+    """A binary tree for efficiently sampling from a large number of events."""
+
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.tree = np.zeros(2 * capacity)
@@ -25,7 +26,7 @@ class SummedRateTree:
 
     def update(self, index: int, rate: float):
         if not (0 <= index < self.capacity):
-            raise IndexError("Event index out of bounds for SummedRateTree.")
+            raise IndexError("Index out of bounds.")
         leaf_index = index + self.capacity
         delta = rate - self.tree[leaf_index]
         if abs(delta) < 1e-12:
@@ -49,7 +50,6 @@ class SummedRateTree:
 
 
 class GillespieSimulation:
-    # ... (__init__ and other methods are mostly unchanged) ...
     def __init__(
         self, width: int, length: int, b_m: float, k_total: float, phi: float, **kwargs
     ):
@@ -65,7 +65,7 @@ class GillespieSimulation:
         ic_type = kwargs.get("initial_condition_type", "mixed")
         ic_patch_size = kwargs.get("initial_mutant_patch_size", 0)
         self.is_radial_growth = ic_type == "single_cell"
-        self.population: Dict[Hex, int] = self._initialize_population(
+        self.population: Dict[Hex, int] = self._initialize_population_pointytop(
             ic_type, ic_patch_size
         )
         self.wt_front_cells: Dict[Hex, List[Hex]] = {}
@@ -85,14 +85,10 @@ class GillespieSimulation:
 
     @property
     def mean_front_position(self) -> float:
-        """The average position of the expanding front along the growth axis (q)."""
-        return (
-            np.mean([-h.s for h in self._front_lookup]) if self._front_lookup else 0.0
-        )
+        return np.mean([h.q for h in self._front_lookup]) if self._front_lookup else 0.0
 
     @property
     def mutant_fraction(self) -> float:
-        """The fraction of mutant cells in the entire population (ρ_M)."""
         return (
             self.mutant_cell_count / self.total_cell_count
             if self.total_cell_count > 0
@@ -101,35 +97,27 @@ class GillespieSimulation:
 
     @property
     def front_roughness_sq(self) -> float:
-        """
-        The squared width of the expanding front (W²), a measure of geometric
-        roughness calculated as the variance of front cell positions.
-        """
-        return np.var([-h.s for h in self._front_lookup]) if self._front_lookup else 0.0
+        return np.var([h.q for h in self._front_lookup]) if self._front_lookup else 0.0
 
     @property
     def expanding_front_length(self) -> float:
-        """
-        The number of cells at the population-empty space interface. This serves as a
-        proxy for the effective population size (N_e) at the frontier.
-        """
         return float(len(self._front_lookup))
 
     @property
     def domain_boundary_length(self) -> float:
-        """
-        The total length of the interface between Wild-Type and Mutant domains,
-        a measure of genetic demixing/segregation.
-        """
         return self._wt_m_interface_bonds / 2.0
 
     @property
     def mutant_sector_width(self) -> float:
-        """The number of mutant cells at the expanding front."""
         return float(len(self.m_front_cells))
 
-    # ... (The rest of the file, including the optimized _execute_event, is unchanged from the previous step) ...
-    def _initialize_population(self, ic_type, patch_size):
+    def _axial_to_cube(self, q: int, r_offset: int) -> Hex:
+        """[PROVEN LOGIC] Helper to convert from the working offset coordinate system."""
+        r = r_offset - (q + (q & 1)) // 2
+        return Hex(q, r, -q - r)
+
+    def _initialize_population_pointytop(self, ic_type, patch_size):
+        """[PROVEN LOGIC] Initializes a vertical line of cells."""
         pop = {}
         if ic_type == "single_cell":
             pop[Hex(0, 0, 0)] = Wildtype
@@ -137,7 +125,7 @@ class GillespieSimulation:
         else:
             start_idx = (self.width - patch_size) // 2
             for i in range(self.width):
-                h = Hex(i, -i, 0)
+                h = self._axial_to_cube(0, i)
                 cell_type = (
                     Mutant
                     if (ic_type == "patch" and start_idx <= i < start_idx + patch_size)
@@ -150,41 +138,37 @@ class GillespieSimulation:
         return pop
 
     def _precompute_env_params(self, **kwargs):
-        env_map = kwargs.get("environment_map")
-        patch_width = kwargs.get("patch_width")
-        if env_map is None:
-            self.environment_map = {0: {"b_wt": 1.0, "b_m": self.global_b_m}}
-            self.patch_sequence = [(0, patch_width or self.length)]
-        else:
-            self.environment_map = env_map
-            self.patch_sequence = (
-                [(i % len(env_map), patch_width) for i in range(len(env_map))]
-                if patch_width
-                else []
-            )
-
+        env_map = kwargs.get("environment_map", {})
+        patch_width = kwargs.get("patch_width", 0)
+        self.patch_sequence = (
+            [(i % len(env_map), patch_width) for i in range(len(env_map))]
+            if patch_width > 0 and env_map
+            else [(0, self.length)]
+        )
         k_wt_m, k_m_wt = self._calculate_asymmetric_rates(
             self.global_k_total, self.global_phi
         )
-        self.num_patches = len(self.environment_map)
+        self.num_patches = len(env_map) if env_map else 1
         self.patch_params = np.array(
             [
                 [
-                    self.environment_map.get(i, {}).get("b_wt", 1.0),
-                    self.environment_map.get(i, {}).get("b_m", self.global_b_m),
+                    env_map.get(i, {}).get("b_wt", 1.0),
+                    env_map.get(i, {}).get("b_m", self.global_b_m),
                     k_wt_m,
                     k_m_wt,
                 ]
                 for i in range(self.num_patches)
             ]
+            if env_map
+            else [[1.0, self.global_b_m, k_wt_m, k_m_wt]]
         )
         self._precompute_patch_indices()
 
     def _precompute_patch_indices(self):
         self.q_to_patch_index = np.zeros(self.length, dtype=int)
         current_q = 0
-        if not self.patch_sequence:
-            self.patch_sequence = [(0, self.length)]
+        if not self.patch_sequence or self.patch_sequence[0][1] == 0:
+            return
         cycle_len = sum(width for _, width in self.patch_sequence)
         if cycle_len > 0:
             while current_q < self.length:
@@ -214,24 +198,18 @@ class GillespieSimulation:
         return bond_count
 
     def _find_initial_front(self):
-        self.population_snapshot = self.population.copy()
         for h in list(self.population.keys()):
             self._update_events_for_cell(h)
         self._wt_m_interface_bonds = self._calculate_initial_wt_mutant_interface()
 
     def _get_neighbors_periodic(self, h: Hex) -> list:
+        """[PROVEN LOGIC] Correct periodic boundaries for pointy-top, ported from linear_model."""
         unwrapped = h.neighbors()
         wrapped = []
         for n in unwrapped:
-            q, r = n.q, n.r
-            if q < 0:
-                q += self.width
-                r -= self.width
-            elif q >= self.width:
-                q -= self.width
-                r += self.width
-            s = -q - r
-            wrapped.append(Hex(q, r, s))
+            offset_r = n.r + (n.q + (n.q & 1)) // 2
+            offset_r %= self.width
+            wrapped.append(self._axial_to_cube(n.q, offset_r))
         return wrapped
 
     def _is_valid_growth_neighbor(self, neighbor: Hex, parent: Hex) -> bool:
@@ -239,7 +217,9 @@ class GillespieSimulation:
             return False
         if self.is_radial_growth:
             return True
-        return neighbor.s <= parent.s
+        if not (0 <= neighbor.q < self.length):
+            return False
+        return neighbor.q >= parent.q
 
     def _add_event(self, event: Tuple, rate: float):
         if not self.free_indices:
@@ -257,25 +237,21 @@ class GillespieSimulation:
         self.tree.update(idx, 0.0)
 
     def _get_rate_params_for_cell(self, h: Hex):
-        q_idx = np.clip(int(-h.s), 0, self.length - 1)
+        q_idx = np.clip(int(h.q), 0, self.length - 1)
         patch_idx = self.q_to_patch_index[q_idx]
         return self.patch_params[patch_idx]
 
     def _update_events_for_cell(self, h: Hex):
         cell_type = self.population.get(h)
         if h in self._front_lookup:
-            old_cell_type = self.population_snapshot.get(h, cell_type)
-            front_dict = (
-                self.wt_front_cells if old_cell_type == Wildtype else self.m_front_cells
-            )
-            for neighbor in front_dict.get(h, []):
+            for neighbor in self.wt_front_cells.get(h, []) + self.m_front_cells.get(
+                h, []
+            ):
                 self._remove_event(("grow", h, neighbor))
             self._remove_event(("switch", h, None))
-            self._front_lookup.remove(h)
-            if h in self.wt_front_cells:
-                del self.wt_front_cells[h]
-            if h in self.m_front_cells:
-                del self.m_front_cells[h]
+            self._front_lookup.discard(h)
+            self.wt_front_cells.pop(h, None)
+            self.m_front_cells.pop(h, None)
         if cell_type is None or cell_type == Empty:
             return
         empty_neighbors = [
@@ -303,34 +279,32 @@ class GillespieSimulation:
         return (k_total / 2.0) * (1.0 - phi), (k_total / 2.0) * (1.0 + phi)
 
     def _execute_event(self, event_type: str, parent: Hex, target: Optional[Hex]):
-        affected_hexes = {parent}
+        affected_hexes = {parent, target} if target else {parent}
         for n in self._get_neighbors_periodic(parent):
             if n in self.population:
                 affected_hexes.add(n)
         if target:
-            affected_hexes.add(target)
-
+            for n in self._get_neighbors_periodic(target):
+                if n in self.population:
+                    affected_hexes.add(n)
         interface_delta = 0
         hex_to_check = target if event_type == "grow" else parent
         old_type = self.population.get(hex_to_check, Empty)
-
         for n in self._get_neighbors_periodic(hex_to_check):
             n_type = self.population.get(n)
-            if n_type is not None and n_type != Empty:
-                if n_type != old_type and old_type != Empty:
-                    interface_delta -= 2
-
-        self.population_snapshot = {h: self.population.get(h) for h in affected_hexes}
-
+            if (
+                n_type is not None
+                and n_type != Empty
+                and old_type != Empty
+                and n_type != old_type
+            ):
+                interface_delta -= 2
         if event_type == "grow":
             new_type = self.population[parent]
             self.population[target] = new_type
             if new_type == Mutant:
                 self.mutant_cell_count += 1
             self.total_cell_count += 1
-            for n in self._get_neighbors_periodic(target):
-                if n in self.population:
-                    affected_hexes.add(n)
         elif event_type == "switch":
             old_cell_type = self.population[parent]
             new_type = Mutant if old_cell_type == Wildtype else Wildtype
@@ -339,16 +313,12 @@ class GillespieSimulation:
                 self.mutant_cell_count += 1
             else:
                 self.mutant_cell_count -= 1
-
         new_type = self.population[hex_to_check]
         for n in self._get_neighbors_periodic(hex_to_check):
             n_type = self.population.get(n)
-            if n_type is not None and n_type != Empty:
-                if n_type != new_type:
-                    interface_delta += 2
-
+            if n_type is not None and n_type != Empty and n_type != new_type:
+                interface_delta += 2
         self._wt_m_interface_bonds += interface_delta
-
         for h in affected_hexes:
             self._update_events_for_cell(h)
 
