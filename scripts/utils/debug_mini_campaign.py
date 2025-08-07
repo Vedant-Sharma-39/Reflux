@@ -1,7 +1,8 @@
 # FILE: scripts/utils/debug_mini_campaign.py
 #
 # Runs a small, local "mini-campaign" for a given experiment to test the
-# full data generation pipeline of the NEW "smart-chunking" workflow.
+# full data generation pipeline. This version is corrected to be consistent
+# with the main workflow scripts.
 
 import argparse
 import itertools
@@ -18,19 +19,24 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.config_loader import get_experiment_config, EXPERIMENTS
+# --- Import from the CORRECT, consistent locations ---
+# CHANGED: Import directly from the single source of truth: src/config.py
+from src.config import EXPERIMENTS, PARAM_GRID
+
+# CHANGED: Import the corrected functions from the real generation script
 from scripts.utils.generate_tasks import generate_task_id, resolve_parameters
 
 
 # --- Define Parameters for a Fast Local Run ---
 DEBUG_OVERRIDES = {
-    "num_replicates": 1,  # Only run one replicate per parameter set
-    "max_steps": 50000,  # Limit simulation steps
-    "total_run_time": 200.0,  # Limit simulation time
-    "warmup_time": 50.0,  # Reduce warmup for faster stats
-    "num_samples": 10,  # Reduce samples for faster stats
-    "sample_interval": 5.0,  # Reduce sample interval
-    "length": 1024,  # Use a reasonable simulation length
+    "num_replicates": 2,  # Run a couple of replicates to test stats
+    "max_steps": 50000,
+    "total_run_time": 200.0,
+    "warmup_time": 50.0,
+    "num_samples": 10,
+    "sample_interval": 5.0,
+    "length": 1024,
+    "width": 128,  # Override width for speed as well
 }
 
 
@@ -38,26 +44,27 @@ def generate_mini_task_list(experiment_name: str, points_per_param: int) -> list
     """
     Generates a small, representative list of tasks for a given experiment.
     """
-    config = get_experiment_config(experiment_name)
-    param_grid_values = config["PARAM_GRID_VALUES"]
+    # CHANGED: Get config directly from the imported EXPERIMENTS dictionary
+    config = EXPERIMENTS[experiment_name]
     mini_tasks = []
 
     print(
         f"\n[INFO] Generating a mini-grid with ~{points_per_param} point(s) per parameter..."
     )
 
-    for sim_set in config.get("sim_sets", []):
+    for set_id, sim_set in config.get("sim_sets", {}).items():
         base_params = sim_set.get("base_params", {}).copy()
         grid_param_keys = list(sim_set["grid_params"].keys())
 
         mini_grid_value_arrays = []
         for key in grid_param_keys:
             grid_list_name = sim_set["grid_params"][key]
-            full_list = param_grid_values[grid_list_name]
+            # CHANGED: Get grid values from the imported PARAM_GRID dictionary
+            full_list = PARAM_GRID[grid_list_name]
+
             if len(full_list) <= points_per_param:
                 mini_grid_value_arrays.append(full_list)
             else:
-                # Select a few evenly spaced points from the full list
                 indices = np.linspace(
                     0, len(full_list) - 1, points_per_param, dtype=int
                 )
@@ -66,19 +73,20 @@ def generate_mini_task_list(experiment_name: str, points_per_param: int) -> list
         for combo in itertools.product(*mini_grid_value_arrays):
             instance_params = dict(zip(grid_param_keys, combo))
 
+            # Replicate the logic from the main generator script
             task_params = {
                 **base_params,
                 **instance_params,
                 "run_mode": config["run_mode"],
                 "campaign_id": config["campaign_id"] + "_debug",
-                "experiment_name": experiment_name,
             }
+            # CHANGED: Removed "experiment_name" from params to match main generator
 
             # Apply debug overrides for a fast run
             task_params.update(DEBUG_OVERRIDES)
 
-            # Resolve parameter references (e.g., initial_patch_size: "width")
-            resolved_params = resolve_parameters(task_params, param_grid_values)
+            # CHANGED: Call the corrected resolve_parameters function (takes 1 arg)
+            resolved_params = resolve_parameters(task_params)
             resolved_params["task_id"] = generate_task_id(resolved_params)
             mini_tasks.append(resolved_params)
 
@@ -115,7 +123,8 @@ def main():
         print()
 
     # --- Setup Debug Environment ---
-    config = get_experiment_config(experiment_name)
+    # CHANGED: Get config directly from the imported dictionary
+    config = EXPERIMENTS[experiment_name]
     debug_campaign_id = f"{config['campaign_id']}_debug"
 
     print(f"--- Starting Mini-Campaign Debug for: {experiment_name} ---")
@@ -126,7 +135,6 @@ def main():
         print(f"[WARN] Deleting previous debug data in {debug_data_dir}")
         shutil.rmtree(debug_data_dir)
 
-    # This is the directory where the worker will save its output files
     raw_output_dir = os.path.join(debug_data_dir, "raw")
     os.makedirs(raw_output_dir, exist_ok=True)
 
@@ -141,17 +149,12 @@ def main():
     print(f"[INFO] Generated {len(tasks)} debug tasks and created a mini master list.")
 
     # --- Run the Mini-Campaign ---
-    worker_script = os.path.join(project_root, "src/worker.py")
-
-    # Set the PROJECT_ROOT env var so the worker can find its imports
-    env = os.environ.copy()
-    env["PROJECT_ROOT"] = project_root
+    worker_script = os.path.join("src", "worker.py")  # Relative path is fine with cwd
 
     for params in tqdm(tasks, desc="Running debug tasks"):
         params_json = json.dumps(params)
 
-        # This subprocess call now perfectly mimics what run_chunk.sh does.
-        # It lets the worker handle its own file I/O.
+        # IMPROVEMENT: Use cwd=project_root for maximum robustness, mirroring hpc_manager.sh
         process = subprocess.run(
             [
                 sys.executable,
@@ -159,25 +162,29 @@ def main():
                 "--params",
                 params_json,
                 "--output-dir",
-                raw_output_dir,  # Pass the output directory
+                raw_output_dir,
             ],
             capture_output=True,
             text=True,
             check=False,
-            env=env,
+            cwd=project_root,  # This is more robust than setting ENV
         )
 
         if process.returncode != 0:
             tqdm.write(f"\n[ERROR] Worker failed for task_id {params.get('task_id')}.")
             tqdm.write(f"   Stderr: {process.stderr.strip()}")
-            # The worker now creates a .error file, so we don't need to do more here.
 
     print(f"\n[SUCCESS] Mini-campaign finished.")
     print(f"Raw debug data generated in: {raw_output_dir}")
+
+    # CHANGED: Provide correct, helpful, and copy-pasteable next steps
+    print("\n--- Next Steps ---")
+    consolidate_script = os.path.join("scripts", "utils", "consolidate_data.py")
+    print("1. To test data consolidation, run this command from the project root:")
+    print(f"   python3 {consolidate_script} {debug_campaign_id}\n")
     print(
-        f"Next, test consolidation with: ./scripts/launch.sh consolidate {experiment_name}"
+        "2. After consolidation, you can test your plotting scripts on the debug data."
     )
-    print("Then, test your plotting scripts.")
 
 
 if __name__ == "__main__":

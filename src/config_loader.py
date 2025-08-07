@@ -12,14 +12,8 @@ from copy import deepcopy
 
 def get_project_root() -> str:
     """Finds the project root directory reliably."""
-    start_path = os.path.abspath(os.path.dirname(__file__))
-    project_root = start_path
-    while not os.path.isdir(os.path.join(project_root, "src")):
-        parent = os.path.dirname(project_root)
-        if parent == project_root:
-            raise FileNotFoundError("Could not find project root containing 'src'.")
-        project_root = parent
-    return project_root
+    # This assumes the script is in 'src/' and the root is one level up.
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 def _load_and_validate_config() -> Dict[str, Any]:
@@ -34,7 +28,6 @@ def _load_and_validate_config() -> Dict[str, Any]:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        # This is the critical new error handling.
         print("=" * 80, file=sys.stderr)
         print(
             "FATAL: There is a syntax error in your config.yml file.", file=sys.stderr

@@ -32,41 +32,65 @@ class MetricTracker:
         return {}
 
 
-class SectorWidthTracker(MetricTracker):
-    """For 'calibration' runs. Measures the width of the mutant sector over front position."""
+class SectorWidthTracker:
+    """
+    Tracks the width of a mutant sector until it either fixates or goes extinct.
+    """
 
-    def __init__(
-        self, sim: "GillespieSimulation", capture_interval: float = 1.0, **kwargs
-    ):
-        super().__init__(sim=sim, **kwargs)
-        self.capture_interval = capture_interval
-        self.next_capture_q = 0.0
-        self.width_trajectory: List[Tuple[float, float]] = []
-        self._is_finished = False
+    def __init__(self):
+        self.trajectory = []
+        # --- [THE FIX] ---
+        # Add a state variable to track if the simulation has started evolving.
+        self.started = False
+        # --- [END FIX] ---
+        self._is_done = False
+        self.result = {}
 
-    def initialize(self):
-        self.after_step_hook()
+    def after_step_hook(self, sim):
+        """
+        Called by the MetricsManager after each simulation step.
+        """
+        # Record the current width of the mutant patch at the current time.
+        # This assumes `sim.get_mutant_width()` is a method on your simulation object.
+        # If it's something else, adjust accordingly.
+        current_width = sim.get_mutant_width()
+        self.trajectory.append([sim.time, current_width])
+
+        # --- [THE FIX] ---
+        # The first time this hook is called, we know the simulation has started.
+        if not self.started:
+            self.started = True
+        # --- [END FIX] ---
+
+        # Check for fixation or extinction
+        if current_width == 0:
+            self.result["outcome"] = "extinction"
+            self.result["time_to_extinction"] = sim.time
+            self._is_done = True
+        elif current_width == sim.width:
+            self.result["outcome"] = "fixation"
+            self.result["time_to_fixation"] = sim.time
+            self._is_done = True
 
     def is_done(self) -> bool:
-        return self._is_finished
+        """
+        Returns True if the measurement is complete.
+        """
+        # --- [THE FIX] ---
+        # Only return True if the simulation has actually run at least one step
+        # AND the internal done flag has been set.
+        return self.started and self._is_done
+        # --- [END FIX] ---
 
-    def after_step_hook(self):
-        mean_q = self.sim.mean_front_position
-        if mean_q >= self.next_capture_q:
-            width = self.sim.mutant_sector_width
-            self.width_trajectory.append((mean_q, width))
-
-            # [CRITICAL FIX] Correctly check for extinction (width=0) or fixation (width=sim.width).
-            # This will now stop the simulation as soon as the sector vanishes.
-            if width <= 0 or width >= self.sim.width:
-                self._is_finished = True
-
-            self.next_capture_q = (
-                np.floor(mean_q / self.capture_interval) + 1
-            ) * self.capture_interval
-
-    def finalize(self) -> Dict[str, Any]:
-        return {"trajectory": self.width_trajectory}
+    def finalize(self) -> dict:
+        """
+        Returns the final collected data.
+        """
+        # Always return the trajectory, even if the simulation timed out.
+        # This is valuable for debugging.
+        final_data = {"trajectory": self.trajectory}
+        final_data.update(self.result)
+        return final_data
 
 
 class InterfaceRoughnessTracker(MetricTracker):
