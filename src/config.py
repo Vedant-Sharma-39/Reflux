@@ -16,6 +16,46 @@ PARAM_GRID = {
     "k_total_scan_bet_hedging": [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
     "patch_width_scan": [30, 60, 120],
     "ic_control_scan": [0],  # Pure WT (generalist) control
+
+    # --- Refined Parameter Grids for Asymmetric Patch Experiment ---
+    "phi_scan_asymmetric": [-1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.2, 0.0],
+    "env_asymmetric_cycle_refined": [
+        {
+            "name": "30_90",
+            "cycle_length": 120,
+            "patches": [
+                {"id": 0, "width": 30, "params": {"b_wt": 1.0}},
+                {"id": 1, "width": 90, "params": {"b_wt": 0.0, "b_m": 1.0}}
+            ]
+        },
+        {
+            "name": "60_60",
+            "cycle_length": 120,
+            "patches": [
+                {"id": 0, "width": 60, "params": {"b_wt": 1.0}},
+                {"id": 1, "width": 60, "params": {"b_wt": 0.0, "b_m": 1.0}}
+            ]
+        },
+        {
+            "name": "90_30",
+            "cycle_length": 120,
+            "patches": [
+                {"id": 0, "width": 90, "params": {"b_wt": 1.0}},
+                {"id": 1, "width": 30, "params": {"b_wt": 0.0, "b_m": 1.0}}
+            ]
+        },
+        {
+            "name": "scrambled_60_60",
+            "scrambled": True,
+            "cycle_length": 120,
+            "avg_patch_width": 60,
+            "patches": [
+                {"id": 0, "proportion": 0.5, "params": {"b_wt": 1.0}},
+                {"id": 1, "proportion": 0.5, "params": {"b_wt": 0.0, "b_m": 1.0}}
+            ]
+        }
+    ],
+
     "env_bet_hedging": {
         0: {"b_wt": 1.0},
         1: {"b_wt": 0.0, "b_m": 1.0},
@@ -31,7 +71,7 @@ EXPERIMENTS = {
         "run_mode": "calibration",
         "hpc_params": {
             "time": "02:00:00",
-            "mem": "2G",
+            "mem": "1G",
             "sims_per_task": 50,
         },  # FIX: 0-2 -> 02
         "sim_sets": {
@@ -54,8 +94,8 @@ EXPERIMENTS = {
         "campaign_id": "fig1_kpz_scaling",
         "run_mode": "diffusion",
         "hpc_params": {
-            "time": "12:00:00",
-            "mem": "4G",
+            "time": "02:00:00",
+            "mem": "1G",
             "sims_per_task": 40,
         },  # FIX: 0-12 -> 12
         "sim_sets": {
@@ -77,8 +117,8 @@ EXPERIMENTS = {
         "campaign_id": "fig2_phase_diagram",
         "run_mode": "phase_diagram",
         "hpc_params": {
-            "time": "04:00:00",
-            "mem": "4G",
+            "time": "01:00:00",
+            "mem": "1G",
             "sims_per_task": 50,
         },  # FIX: 0-04 -> 04
         "sim_sets": {
@@ -104,7 +144,7 @@ EXPERIMENTS = {
         "campaign_id": "fig4_relaxation",
         "run_mode": "relaxation",
         "hpc_params": {
-            "time": "06:00:00",
+            "time": "01:00:00",
             "mem": "2G",
             "sims_per_task": 40,
         },  # FIX: 0-06 -> 06
@@ -131,7 +171,7 @@ EXPERIMENTS = {
         "campaign_id": "fig3_bet_hedging_final",
         "run_mode": "bet_hedging_converged",
         "hpc_params": {
-            "time": "4:00:00",
+            "time": "01:00:00",
             "mem": "2G",
             "sims_per_task": 20,
         },
@@ -173,6 +213,34 @@ EXPERIMENTS = {
                     "initial_mutant_patch_size": "ic_control_scan",
                 },
             },
+        },
+    },
+    "asymmetric_patches": {
+        "campaign_id": "fig5_asymmetric_patches",
+        "run_mode": "bet_hedging_converged",
+        "hpc_params": {
+            "time": "02:00:00",
+            "mem": "2G",
+            "sims_per_task": 20,
+        },
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 256,
+                    "length": 16384,
+                    "initial_condition_type": "mixed",
+                    "num_replicates": 32,
+                    "max_cycles": 50,
+                    "convergence_window_cycles": 5,
+                    "convergence_threshold": 0.01,
+                },
+                "grid_params": {
+                    "b_m": "bm_deleterious_narrow",
+                    "phi": "phi_scan_asymmetric",
+                    "k_total": "k_total_scan_bet_hedging",
+                    "env_definition": "env_asymmetric_cycle_refined",
+                },
+            }
         },
     },
 }

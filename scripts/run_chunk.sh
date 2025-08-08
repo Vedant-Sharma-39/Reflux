@@ -1,8 +1,8 @@
 #!/bin/bash
-# FILE: scripts/run_chunk.sh (v2.4 - Final, Subshell Fix)
-# This version fixes a bug where the `sed | while` pipeline caused a
-# false failure due to the while loop's exit code. It now uses
-# process substitution for robust loop handling.
+# FILE: scripts/run_chunk.sh (v2.7 - Final, Exit Code Fix)
+# This version fixes a subtle bug where the 'while read' loop's natural
+# termination on EOF (which has a non-zero exit code) was being
+# incorrectly interpreted by the exit trap as a script failure.
 
 set -euo pipefail
 
@@ -82,9 +82,6 @@ echo ""
 
 num_processed=0
 
-# --- [THE FIX] ---
-# Use process substitution instead of a pipe to avoid the while loop
-# running in a subshell, which prevents false exit codes.
 while IFS= read -r PARAMS_JSON; do
     if [ -z "${PARAMS_JSON}" ]; then continue; fi
     
@@ -94,8 +91,8 @@ while IFS= read -r PARAMS_JSON; do
     python3 "src/worker.py" --params "${PARAMS_JSON}" --output-dir "${RAW_DATA_DIR}"
     
     ((num_processed++))
-done < <(sed -n "${START_LINE},${END_LINE}p" "${TASK_LIST_FILE}")
-# --- [END FIX] ---
+done < <(sed -n "${START_LINE},${END_LINE}p" "${TASK_LIST_FILE}") || true
+
 
 echo ""
 echo "INFO: Finished processing. ${num_processed} tasks attempted in this chunk."

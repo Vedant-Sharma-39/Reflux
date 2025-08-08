@@ -1,110 +1,200 @@
-# FILE: src/io/data_loader.py
+import os
+import sys
+import pandas as pd
+from typing import Optional, Dict
+
+# --- Caching Mechanism ---
+# A simple in-memory cache to store loaded DataFrames.
+_cache: Dict[str, pd.DataFrame] = {}
+
+def load_aggregated_data(
+    campaign_id: str, 
+    project_root: str, 
+    force_reload: bool = False
+) -> Optional[pd.DataFrame]:
+    """
+    Loads the master aggregated data for a given campaign with in-memory caching.
+
+    Args:
+        campaign_id: The ID of the campaign to load data for.
+        project_root: The absolute path to the project's root directory.
+        force_reload: If True, bypasses the cache and reloads data from disk.
+
+    Returns:
+        A pandas DataFrame with the aggregated data, or None if the file doesn't exist.
+    """
+    cache_key = campaign_id
+    if not force_reload and cache_key in _cache:
+        print(f"Loading cached data for campaign '{campaign_id}'.")
+        return _cache[cache_key].copy()
+
+    master_file_path = os.path.join(
+        project_root, "data", campaign_id, "analysis", "master_aggregated.csv"
+    )
+
+    if not os.path.exists(master_file_path):
+        print(
+            f"Error: Master aggregated file not found for campaign '{campaign_id}'.\n"
+            f"Please run the consolidation script first:\n"
+            f"  python scripts/utils/consolidate_data.py {campaign_id}",
+            file=sys.stderr,
+        )
+        return None
+
+    try:
+        print(f"Loading data from: {master_file_path}")
+        df = pd.read_csv(master_file_path)
+        _cache[cache_key] = df  # Update cache
+        return df.copy()
+    except pd.errors.EmptyDataError:
+        print(f"Warning: Master file for campaign '{campaign_id}' is empty.", file=sys.stderr)
+        return pd.DataFrame() # Return an empty DataFrame
+    except Exception as e:
+        print(f"Error loading data for campaign '{campaign_id}': {e}", file=sys.stderr)
+        return None
+
 # The single, authoritative utility for consolidating and loading simulation data.
+# This version uses multiprocessing and correctly preserves trajectory columns
+# needed for specific analyses (like Figure 1) in the main summary file.
 
 import pandas as pd
 import os
+import sys
 import json
 from tqdm import tqdm
 import gzip
+import multiprocessing
+from functools import partial
+
+
+# --- Worker Function for Parallel Processing ---
+def _process_file(file_path: str, timeseries_dir: str, bulky_columns: list):
+    """
+    Processes a single raw JSON file.
+    - Extracts specific bulky data (like timeseries) and saves it separately.
+    - Returns the summary data dictionary.
+    """
+    try:
+        with open(file_path, "r") as f:
+            data = json.load(f)
+
+        task_id = data.get("task_id")
+
+        for col in bulky_columns:
+            bulky_data = data.pop(col, None)
+            if bulky_data and task_id and col == "timeseries":
+                out_path = os.path.join(timeseries_dir, f"ts_{task_id}.json.gz")
+                with gzip.open(out_path, "wt", encoding="utf-8") as f_gz:
+                    json.dump(bulky_data, f_gz)
+
+        return data
+    except (json.JSONDecodeError, IOError, TypeError):
+        return None
 
 
 def consolidate_raw_data(campaign_id: str, project_root: str):
     """
-    Finds all raw chunk files from HPC jobs, appends them to master databases,
-    and then deletes the raw files to prevent clutter and manage file counts.
+    Scans the raw data directory and uses a pool of parallel processes to
+    consolidate summary results and extract timeseries data.
     """
     campaign_dir = os.path.join(project_root, "data", campaign_id)
-    raw_results_dir = os.path.join(campaign_dir, "results_raw")
-    raw_timeseries_dir = os.path.join(campaign_dir, "timeseries_raw")
+    raw_dir = os.path.join(campaign_dir, "raw")
     analysis_dir = os.path.join(campaign_dir, "analysis")
+    timeseries_dir = os.path.join(campaign_dir, "timeseries")
 
     os.makedirs(analysis_dir, exist_ok=True)
+    os.makedirs(timeseries_dir, exist_ok=True)
 
-    master_summary_path = os.path.join(
+    if not os.path.isdir(raw_dir):
+        print(
+            f"Info: Raw data directory not found at {raw_dir}. Nothing to consolidate.",
+            file=sys.stderr,
+        )
+        return
+
+    raw_files = [
+        os.path.join(raw_dir, f) for f in os.listdir(raw_dir) if f.endswith(".json")
+    ]
+
+    if not raw_files:
+        print(
+            f"Info: No raw .json files found in {raw_dir} to process.", file=sys.stderr
+        )
+        open(os.path.join(analysis_dir, ".consolidated"), "a").close()
+        return
+
+    num_workers = max(1, os.cpu_count() - 2)
+    print(
+        f"--- Consolidating {len(raw_files)} files for '{campaign_id}' using {num_workers} parallel workers ---",
+        file=sys.stderr,
+    )
+
+ 
+    BULKY_COLUMNS_TO_EXTRACT = ["timeseries"]
+
+    worker_func = partial(
+        _process_file,
+        timeseries_dir=timeseries_dir,
+        bulky_columns=BULKY_COLUMNS_TO_EXTRACT,
+    )
+
+    summary_results = []
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        pbar = tqdm(
+            pool.imap_unordered(worker_func, raw_files),
+            total=len(raw_files),
+            file=sys.stderr,
+            ncols=80,
+        )
+        for result in pbar:
+            if result is not None:
+                summary_results.append(result)
+
+    if not summary_results:
+        print(
+            "Warning: No valid summary data was extracted from raw files.",
+            file=sys.stderr,
+        )
+        return
+
+    summary_df = pd.DataFrame(summary_results)
+    summary_output_file = os.path.join(
         analysis_dir, f"{campaign_id}_summary_aggregated.csv"
     )
-    master_ts_dir = os.path.join(campaign_dir, "timeseries")
-    os.makedirs(master_ts_dir, exist_ok=True)
+    summary_df.to_csv(summary_output_file, index=False)
 
-    # --- Consolidate Summary Files ---
-    if os.path.isdir(raw_results_dir):
-        summary_chunks = [
-            f for f in os.listdir(raw_results_dir) if f.endswith(".jsonl")
-        ]
-        if summary_chunks:
-            print(f"Consolidating {len(summary_chunks)} summary chunk files...")
-            summary_data = []
-            for chunk_file in tqdm(summary_chunks, desc="Processing summary chunks"):
-                chunk_path = os.path.join(raw_results_dir, chunk_file)
-                with open(chunk_path, "r") as f:
-                    for line in f:
-                        try:
-                            data = json.loads(line)
-                            if "error" not in data:
-                                summary_data.append(data)
-                        except json.JSONDecodeError:
-                            continue
-                os.remove(chunk_path)
+    open(os.path.join(analysis_dir, ".consolidated"), "a").close()
 
-            if summary_data:
-                new_df = pd.DataFrame(summary_data)
-                if os.path.exists(master_summary_path):
-                    new_df.to_csv(
-                        master_summary_path, mode="a", header=False, index=False
-                    )
-                else:
-                    new_df.to_csv(master_summary_path, index=False)
-            if os.path.exists(raw_results_dir):
-                os.rmdir(raw_results_dir)
-            print("Summary consolidation complete.")
-
-    # --- Consolidate Timeseries Files ---
-    if os.path.isdir(raw_timeseries_dir):
-        ts_chunks = [
-            f for f in os.listdir(raw_timeseries_dir) if f.endswith(".jsonl.gz")
-        ]
-        if ts_chunks:
-            print(f"Consolidating {len(ts_chunks)} timeseries chunk files...")
-            for chunk_file in tqdm(ts_chunks, desc="Processing timeseries chunks"):
-                chunk_path = os.path.join(raw_timeseries_dir, chunk_file)
-                with gzip.open(chunk_path, "rt") as chunk:
-                    for line in chunk:
-                        try:
-                            data = json.loads(line)
-                            task_id = data.get("task_id")
-                            if task_id and data.get("timeseries"):
-                                out_path = os.path.join(
-                                    master_ts_dir, f"ts_{task_id}.json.gz"
-                                )
-                                with gzip.open(out_path, "wt") as f_out:
-                                    json.dump(data["timeseries"], f_out)
-                        except (json.JSONDecodeError, KeyError):
-                            continue
-                os.remove(chunk_path)
-            if os.path.exists(raw_timeseries_dir):
-                os.rmdir(raw_timeseries_dir)
-            print("Timeseries consolidation complete.")
+    print(f"\nConsolidation complete for {campaign_id}.", file=sys.stderr)
+    print(
+        f"  - Aggregated {len(summary_df)} summaries into: {summary_output_file}",
+        file=sys.stderr,
+    )
 
 
-def aggregate_data_cached(
-    campaign_id: str, project_root: str, force_reaggregate: bool = False
-):
-    """
-    A robust, reusable function to load the master aggregated CSV.
-    It automatically triggers the consolidation of any new raw data first.
-    """
+def aggregate_data_cached(campaign_id: str, project_root: str):
     analysis_dir = os.path.join(project_root, "data", campaign_id, "analysis")
     master_summary_path = os.path.join(
         analysis_dir, f"{campaign_id}_summary_aggregated.csv"
     )
 
-    consolidate_raw_data(campaign_id, project_root)
-
-    if os.path.exists(master_summary_path):
-        print(f"Loading master aggregated data from: {master_summary_path}")
-        return pd.read_csv(master_summary_path, low_memory=False)
-    else:
-        print(
-            "No master aggregated file found after consolidation. No data to analyze."
+    if not os.path.exists(master_summary_path):
+        sys.exit(
+            f"Error: Aggregated file not found at {master_summary_path}. Please run './scripts/analyze.sh' first."
         )
-        return pd.DataFrame()
+
+    print(f"Loading master aggregated data for '{campaign_id}'...")
+    return pd.read_csv(master_summary_path, low_memory=False)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print(
+            f"Usage: python3 {sys.argv[0]} <campaign_id> <project_root_path>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    campaign_id_arg = sys.argv[1]
+    project_root_path = sys.argv[2]
+    consolidate_raw_data(campaign_id_arg, project_root_path)

@@ -1,7 +1,7 @@
 # FILE: src/worker.py
 # This worker executes a single simulation task defined by a self-contained JSON object
 # and writes its output directly to a file in the specified output directory.
-# [v2 - Added 'bet_hedging_converged' run mode for rigorous fitness calculation]
+# [v3 - Robust Logging Fix]
 
 import argparse
 import json
@@ -247,7 +247,12 @@ def main():
             json.dump(result_data, f, allow_nan=True, separators=(",", ":"))
 
         os.rename(tmp_output_path, final_output_path)
-        print(f"Successfully completed task {task_id}.")
+
+        # --- [THE FIX] ---
+        # The success message is now the VERY LAST operation in the try block.
+        # It will only be printed if the simulation, json serialization,
+        # and file rename operations ALL succeed without raising an exception.
+        print(f"Successfully wrote output and completed task {task_id}.")
 
     except Exception:
         task_id = params.get("task_id", "unknown_task")

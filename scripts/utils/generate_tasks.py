@@ -22,11 +22,18 @@ def generate_task_id(params: dict) -> str:
     id_defining_params = {
         k: v for k, v in params.items() if k not in ["campaign_id", "run_mode"]
     }
-    for key, value in id_defining_params.items():
-        if isinstance(value, dict):
-            id_defining_params[key] = json.dumps(value, sort_keys=True)
 
-    sorted_items = sorted(id_defining_params.items())
+    def deep_sort(obj):
+        if isinstance(obj, dict):
+            return sorted((k, deep_sort(v)) for k, v in obj.items())
+        if isinstance(obj, list):
+            return sorted(deep_sort(x) for x in obj)
+        else:
+            return obj
+
+    # Use a robust JSON representation for hashing complex nested parameters
+    param_str = json.dumps(deep_sort(id_defining_params), separators=(',', ':'))
+    return str(abs(hash(param_str)))
     param_str = "&".join([f"{k}={v}" for k, v in sorted_items])
     return str(abs(hash(param_str)))
 

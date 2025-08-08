@@ -1,0 +1,7 @@
+# FILE: requirements.txt
+pandas
+numpy
+matplotlib
+seaborn
+tqdm
+typer[all] # For a great CLI experience

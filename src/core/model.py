@@ -138,30 +138,70 @@ class GillespieSimulation:
         return pop
 
     def _precompute_env_params(self, **kwargs):
-        env_map = kwargs.get("environment_map", {})
-        patch_width = kwargs.get("patch_width", 0)
-        self.patch_sequence = (
-            [(i % len(env_map), patch_width) for i in range(len(env_map))]
-            if patch_width > 0 and env_map
-            else [(0, self.length)]
-        )
+        env_def = kwargs.get("env_definition")
         k_wt_m, k_m_wt = self._calculate_asymmetric_rates(
             self.global_k_total, self.global_phi
         )
-        self.num_patches = len(env_map) if env_map else 1
-        self.patch_params = np.array(
-            [
-                [
-                    env_map.get(i, {}).get("b_wt", 1.0),
-                    env_map.get(i, {}).get("b_m", self.global_b_m),
+
+        if env_def and isinstance(env_def, dict):
+            # --- New logic for structured environments ---
+            patch_param_list = []
+            sorted_patches = sorted(env_def.get("patches", []), key=lambda p: p["id"])
+            for patch in sorted_patches:
+                p_params = patch.get("params", {})
+                patch_param_list.append([
+                    p_params.get("b_wt", 1.0),
+                    p_params.get("b_m", self.global_b_m),
                     k_wt_m,
                     k_m_wt,
+                ])
+            self.patch_params = np.array(patch_param_list)
+            self.num_patches = len(self.patch_params)
+
+            if env_def.get("scrambled"):
+                # Logic for the "scrambled" control environment
+                avg_width = env_def.get("avg_patch_width", 50)
+                patch_types = [p["id"] for p in sorted_patches]
+                proportions = [p["proportion"] for p in sorted_patches]
+                
+                self.patch_sequence = []
+                total_len = 0
+                while total_len < self.length:
+                    width = int(np.random.exponential(scale=avg_width))
+                    if width == 0: continue
+                    patch_type = np.random.choice(patch_types, p=proportions)
+                    self.patch_sequence.append((patch_type, width))
+                    total_len += width
+            else:
+                # Logic for asymmetric but deterministic patches
+                self.patch_sequence = [
+                    (p["id"], p["width"]) for p in env_def.get("patches", [])
                 ]
-                for i in range(self.num_patches)
-            ]
-            if env_map
-            else [[1.0, self.global_b_m, k_wt_m, k_m_wt]]
-        )
+
+        else:
+            # Original logic for symmetric patches
+            env_map = kwargs.get("environment_map", {})
+            patch_width = kwargs.get("patch_width", 0)
+            self.patch_sequence = (
+                [(i % len(env_map), patch_width) for i in range(len(env_map))]
+                if patch_width > 0 and env_map
+                else [(0, self.length)]
+            )
+            self.num_patches = len(env_map) if env_map else 1
+            self.patch_params = np.array(
+                [
+                    [
+                        env_map.get(i, {}).get("b_wt", 1.0),
+                        env_map.get(i, {}).get("b_m", self.global_b_m),
+                        k_wt_m,
+                        k_m_wt,
+                    ]
+                    for i in range(self.num_patches)
+                ]
+                if env_map
+                else [[1.0, self.global_b_m, k_wt_m, k_m_wt]]
+            )
+
         self._precompute_patch_indices()
 
     def _precompute_patch_indices(self):
