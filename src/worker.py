@@ -28,6 +28,8 @@ from src.core.metrics import (
     SteadyStatePropertiesTracker,
     TimeSeriesTracker,
     FrontDynamicsTracker,
+    RecoveryDynamicsTracker,
+    HomogeneousDynamicsTracker
 )
 
 RUN_MODE_CONFIG = {
@@ -56,13 +58,61 @@ RUN_MODE_CONFIG = {
         "tracker_class": None,
         "tracker_params": {},
     },
+        "recovery_dynamics": {
+        "tracker_class": RecoveryDynamicsTracker,
+        "tracker_params": {
+            "timeseries_interval": "timeseries_interval",
+            "warmup_time_ss": "warmup_time_ss",
+            "num_samples_ss": "num_samples_ss",
+            "sample_interval_ss": "sample_interval_ss",
+        }
+    },
+    "homogeneous_dynamics": {
+        "tracker_class": HomogeneousDynamicsTracker,
+        "tracker_params": {
+            "warmup_time": "warmup_time",
+            "num_samples": "num_samples",
+            "sample_interval": "sample_interval",
+        }
+    },
+        "visualization": {
+        "tracker_class": None, # This mode has a custom loop
+        "tracker_params": {},
+    },
+
 }
+
 
 
 def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
     run_mode = params.get("run_mode")
+    if "env_definition" in params and isinstance(params["env_definition"], str):
+        params["env_definition"] = json.loads(params["env_definition"])
+    
+    
     if run_mode not in RUN_MODE_CONFIG:
         raise ValueError(f"Unknown run_mode: '{run_mode}'")
+    
+    if run_mode == "visualization":
+    # Pass necessary parameters for the model to handle plotting
+        params['output_dir_viz'] = os.path.join(
+            project_root, "data", params['campaign_id'], "images"
+        )
+        sim = GillespieSimulation(**params)
+        max_cycles = params.get("max_cycles", 15)
+        # Calculate total distance to simulate based on cycles
+        cycle_q = sim.cycle_q_viz if hasattr(sim, 'cycle_q_viz') else 0
+        target_q = max_cycles * cycle_q if cycle_q > 0 else sim.length - 2
+
+        # Run the simulation for the specified number of cycles
+        while sim.mean_front_position < target_q:
+            active, boundary_hit = sim.step()
+            if not active or boundary_hit:
+                break
+        
+        # The result is the images on disk, so we just return a success message
+        return {"status": "completed", "task_id": params.get("task_id")}
+
     if run_mode == "bet_hedging_converged":
         sim = GillespieSimulation(**params)
         env_map = params.get("environment_map", {})

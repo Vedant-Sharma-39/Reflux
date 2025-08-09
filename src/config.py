@@ -56,6 +56,7 @@ PARAM_GRID = {
         {
             "name": "scrambled_60_60",
             "scrambled": True,
+            "cycle_length": 120,
             "avg_patch_width": 60,
             "patches": [
                 {"id": 0, "proportion": 0.5, "params": {"b_wt": 1.0}},
@@ -63,6 +64,10 @@ PARAM_GRID = {
             ],
         },
     ],
+    "bm_visualization": [0.8, 0.95],  # s = -0.2 and s = -0.05
+    "k_total_visualization": [0.02, 0.5],  # A low and a high switching rate
+    "phi_visualization": [1.0],  # The key case to visualize
+    "patch_width_visualization": [60],  # A representative patch width
 }
 
 # ==============================================================================
@@ -256,6 +261,94 @@ EXPERIMENTS = {
                 },
                 "grid_params": {}, # No parameter sweeps
             }
+        }   
+    },
+    
+        "recovery_timescale": {
+        "campaign_id": "fig4_recovery_timescale",
+        "run_mode": "recovery_dynamics", # <-- Use the new purpose-built run mode
+        # Total sims: 10 (k) * 9 (phi) * 5 (s) * 60 (reps) = 27,000
+        "hpc_params": { "time": "05:00:00", "mem": "2G", "sims_per_task": 80 },
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 256,
+                    "length": 8192,
+                    "initial_condition_type": "patch",
+                    "initial_mutant_patch_size": "width", # Start at 100% Mutant
+                    "num_replicates": 60,
+                    # --- Exhaustive Metric Parameters ---
+                    "total_run_time": 5000.0,      # Run long enough for full relaxation
+                    "timeseries_interval": 10.0,   # High-resolution timeseries
+                    "warmup_time_ss": 4000.0,      # Start steady-state sampling late
+                    "num_samples_ss": 100,         # Get good stats on the final state
+                    "sample_interval_ss": 10.0,
+                },
+                "grid_params": {
+                    "b_m": "bm_final_wide",
+                    "phi": "phi_final_full",
+                    "k_total": "k_total_final_log",
+                },
+            }
         },
     },
+
+    # --- NEW EXPERIMENT FOR SUPPLEMENTARY FIGURE: HOMOGENEOUS COST ---
+    "homogeneous_fitness_cost": {
+        "campaign_id": "sup_homogeneous_cost",
+        "run_mode": "homogeneous_dynamics", # <-- Use the new purpose-built run mode
+        # Total sims: 10 (k) * 9 (phi) * 5 (s) * 40 (reps) = 18,000
+        "hpc_params": { "time": "04:30:00", "mem": "2G", "sims_per_task": 50 },
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 256,
+                    "length": 8192, # Long enough to avoid boundary effects
+                    "num_replicates": 40,
+                    "initial_condition_type": "mixed",
+                    # --- Exhaustive Metric Parameters ---
+                    "total_run_time": 3000.0,
+                    "warmup_time": 1000.0, # Very long warmup for precise measurement
+                    "num_samples": 200,    # High number of samples
+                    "sample_interval": 10.0,
+                },
+                "grid_params": {
+                    "b_m": "bm_final_wide",
+                    "phi": "phi_final_full",
+                    "k_total": "k_total_final_log",
+                },
+            }
+        },
+    },
+    
+    
+    "visualize_purging_dynamics": {
+    "campaign_id": "fig3_purging_viz",
+    "run_mode": "visualization", # A new, dedicated run mode
+    "hpc_params": {
+        "time": "01:00:00",
+        "mem": "4G", # Plotting can use more memory
+        "sims_per_task": 1, # One simulation per job for clean output
+    },
+    "sim_sets": {
+        "main": {
+            "base_params": {
+                "width": 256,
+                "length": 4096, # Long enough to see several cycles
+                "initial_condition_type": "mixed",
+                "environment_map": "env_bet_hedging",
+                "num_replicates": 3, # Just need a few examples for visualization
+                "snapshot_interval_cycles": 1, # Take a picture every environmental cycle
+                "max_cycles": 15, # Run for 15 cycles
+            },
+            "grid_params": {
+                "b_m": "bm_visualization",
+                "phi": "phi_visualization",
+                "k_total": "k_total_visualization",
+                "patch_width": "patch_width_visualization",
+            },
+        }
+    },
+    },
+
 }

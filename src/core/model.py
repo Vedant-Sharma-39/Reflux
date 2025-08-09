@@ -6,6 +6,7 @@ from typing import Dict, Set, Tuple, List, Optional
 
 from src.core.hex_utils import Hex
 from src.core.metrics import MetricsManager
+from pathlib import Path
 
 Empty, Wildtype, Mutant = 0, 1, 2
 
@@ -69,8 +70,25 @@ class GillespieSimulation:
         self.wt_front_cells: Dict[Hex, List[Hex]] = {}
         self.m_front_cells: Dict[Hex, List[Hex]] = {}
         self._front_lookup: Set[Hex] = set()
-        self._wt_m_interface_bonds = 0
+
         self._precompute_env_params(**kwargs)  # <-- This function is now updated
+        self.plotter = None
+
+        # Check for the run_mode passed in through kwargs
+        if kwargs.get("run_mode") == "visualization":
+            from src.core.hex_utils import HexPlotter
+            self.plotter = HexPlotter(hex_size=1.0, labels={}, colormap={1: "#0c2c5c", 2: "#d6a000"})
+
+            # Create a unique directory for this task's images
+            self.snapshot_dir = Path(kwargs.get("output_dir_viz", ".")) / kwargs.get("task_id", "viz_task")
+            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+            self.snapshot_interval_cycles = kwargs.get("snapshot_interval_cycles", 1)
+            # Calculate the length of one environmental cycle to trigger snapshots
+            self.cycle_q_viz = self.patch_sequence[0][1] * len(self.patch_sequence) if self.patch_sequence else 0
+            self.next_snapshot_q = self.cycle_q_viz
+
+        self._wt_m_interface_bonds = 0
         self._find_initial_front()
         self.metrics_manager = kwargs.get("metrics_manager")
         if self.metrics_manager:
@@ -374,5 +392,15 @@ class GillespieSimulation:
             return True, False
         event_type, parent, target = self.idx_to_event[event_idx]
         self._execute_event(event_type, parent, target)
+
+        if self.plotter and self.cycle_q_viz > 0 and self.mean_front_position >= self.next_snapshot_q:
+            cycle_num = int(round(self.next_snapshot_q / self.cycle_q_viz))
+            title = f"Task {self.snapshot_dir.name}\nCycle {cycle_num}, Time: {self.time:.1f}"
+            self.plotter.plot_population(self.population, title=title)
+            snapshot_path = self.snapshot_dir / f"snap_cycle_{cycle_num:03d}.png"
+            self.plotter.save_figure(snapshot_path)
+            # Set the q-position for the next snapshot
+            self.next_snapshot_q += self.cycle_q_viz * self.snapshot_interval_cycles
+
         boundary_hit = self.mean_front_position >= self.length - 2
         return True, boundary_hit

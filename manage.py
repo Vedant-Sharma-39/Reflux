@@ -30,11 +30,37 @@ app = typer.Typer(
 
 VALID_EXP_NAMES = list(EXPERIMENTS.keys())
 FIG_MAP = {
-    "fig1": ("scripts/paper_figures/fig1_boundary_analysis.py", ["fig1_boundary_analysis", "fig1_kpz_scaling"]),
+    "fig1": (
+        "scripts/paper_figures/fig1_boundary_analysis.py",
+        ["fig1_boundary_analysis", "fig1_kpz_scaling"],
+    ),
     "fig2": ("scripts/paper_figures/fig2_phase_diagram.py", ["fig2_phase_diagram"]),
-    "fig3": ("scripts/paper_figures/fig3_bet_hedging.py", ["fig3_bet_hedging_final", "fig3_controls"]),
+    "fig3": ("scripts/paper_figures/fig3_bet_hedging.py", ["fig3_bet_hedging_final"]),
+    "fig3b": (
+        "scripts/paper_figures/fig3b_selection_comparison.py",
+        ["fig3_bet_hedging_final"],
+    ),
     "fig4": ("scripts/paper_figures/fig4_relaxation_dynamics.py", ["fig4_relaxation"]),
-    "fig5": ("scripts/paper_figures/fig5_asymmetric_patches.py", ["fig5_asymmetric_patches"]),
+    "fig5": (
+        "scripts/paper_figures/fig5_asymmetric_patches.py",
+        ["asymmetric_patches", "bet_hedging_final"],
+    ),
+    "fig2_keystone": (
+        "scripts/paper_figures/fig2_keystone_analysis.py",
+        ["phase_diagram", "bet_hedging_final", "fig3_controls"],
+    ),
+    "fig3_adaptation": (
+        "scripts/paper_figures/fig3_adaptation_analysis.py",
+        ["asymmetric_patches", "bet_hedging_final"],
+    ),
+    "fig4_recovery": (
+        "scripts/paper_figures/fig4_recovery_analysis.py",
+        ["recovery_timescale"],
+    ),
+    "sup_fig_cost": (
+        "scripts/paper_figures/sup_fig_homogeneous_cost.py",
+        ["homogeneous_fitness_cost"],
+    ),
 }
 VALID_FIG_NAMES = list(FIG_MAP.keys())
 
@@ -156,7 +182,7 @@ def consolidate(campaign_id: Optional[str] = typer.Argument(None), cpus: int = t
     raw_dir = PROJECT_ROOT / "data" / campaign_id / "raw"
     if not raw_dir.exists() or not any(raw_dir.glob("chunk_*.jsonl")):
         typer.secho(f"No raw data for '{campaign_id}'. Nothing to consolidate.", fg=typer.colors.GREEN)
-        _consolidate_and_ensure_file_exists_SERIAL(campaign_id); return
+        _consolidate_and_ensure_file_exists(campaign_id); return
     job_name = f"consolidate_{campaign_id}"
     if _is_job_running(job_name):
         typer.secho(f"A consolidation job for '{campaign_id}' is already running/pending. Please wait.", fg=typer.colors.YELLOW); return
@@ -180,7 +206,7 @@ def plot_figure(figure_name: Optional[str] = typer.Argument(None)):
         script_path, campaigns = FIG_MAP[fig]
         typer.secho(f"\n--- Generating {fig} ---", fg=typer.colors.BLUE, bold=True)
         for campaign in campaigns:
-            _consolidate_and_ensure_file_exists_SERIAL(campaign) # Use fast serial version for plotting
+            _consolidate_and_ensure_file_exists(campaign) # Use fast serial version for plotting
         cmd = [sys.executable, str(PROJECT_ROOT / script_path)] + campaigns
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -268,23 +294,26 @@ def _update_master_task_list(experiment_name: str) -> int:
             f.write(json.dumps(task) + "\n")
     return len(new_tasks_to_write)
 
-def _consolidate_and_ensure_file_exists_SERIAL(campaign_id: str):
+
+def _consolidate_and_ensure_file_exists(campaign_id: str):
+    """
+    Performs a safe, memory-efficient, incremental consolidation. This is the single
+    source of truth for all consolidation logic.
+    """
     campaign_dir = PROJECT_ROOT / "data" / campaign_id
     raw_dir = campaign_dir / "raw"
     analysis_dir = campaign_dir / "analysis"
     summary_file = analysis_dir / f"{campaign_id}_summary_aggregated.csv"
-
-    # --- THE CRITICAL FIX ---
-    # Add parents=True to ensure the entire path is created if it doesn't exist.
+    
+    # Create parent directories if they don't exist
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    # --- END FIX ---
-
+    
     raw_summary_files = list(raw_dir.glob("chunk_*.jsonl"))
+
     if not raw_summary_files:
-        if not summary_file.exists():
-            pd.DataFrame().to_csv(summary_file, index=False)
+        if not summary_file.exists(): pd.DataFrame().to_csv(summary_file, index=False)
         return
-        
+
     typer.secho(f"Consolidating summary data for: {campaign_id}", fg=typer.colors.BLUE)
     new_results = []
     for chunk_file in tqdm(raw_summary_files, desc=f"Reading chunks for {campaign_id}"):
@@ -293,23 +322,29 @@ def _consolidate_and_ensure_file_exists_SERIAL(campaign_id: str):
                 try:
                     data = json.loads(line)
                     if "error" not in data: new_results.append(data)
-                except: continue
+                except json.JSONDecodeError: continue
     
-    if new_results:
-        new_df = pd.DataFrame(new_results)
-        if summary_file.exists():
-            try: existing_df = pd.read_csv(summary_file, low_memory=False)
-            except: existing_df = pd.DataFrame()
+    if not new_results:
+        for chunk_file in raw_summary_files: chunk_file.unlink()
+        if not summary_file.exists(): pd.DataFrame().to_csv(summary_file, index=False)
+        return
+
+    new_df = pd.DataFrame(new_results)
+    if summary_file.exists():
+        try:
+            existing_df = pd.read_csv(summary_file, low_memory=False)
             combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-        else:
-            combined_df = new_df
-        final_df = combined_df.drop_duplicates(subset=['task_id'], keep='last')
-        final_df.to_csv(summary_file, index=False)
-        typer.secho(f"Updated summary: {len(final_df)} total unique results.", fg=typer.colors.GREEN)
+        except pd.errors.EmptyDataError: combined_df = new_df
+    else: combined_df = new_df
+        
+    final_df = combined_df.drop_duplicates(subset=['task_id'], keep='last')
+    final_df.to_csv(summary_file, index=False)
+    typer.secho(f"Updated summary: {len(final_df)} total unique results.", fg=typer.colors.GREEN)
+    
+    typer.echo("Cleaning up raw chunk files...")
+    for chunk_file in raw_summary_files: chunk_file.unlink()
 
-    for chunk_file in raw_summary_files:
-        chunk_file.unlink()
-
+    # Consolidate bulky timeseries data
     timeseries_raw_dir = campaign_dir / "timeseries_raw"
     timeseries_final_dir = campaign_dir / "timeseries"
     if timeseries_raw_dir.exists():
@@ -320,9 +355,6 @@ def _consolidate_and_ensure_file_exists_SERIAL(campaign_id: str):
             for f in tqdm(raw_ts_files, desc="Moving timeseries data"): shutil.move(str(f), str(timeseries_final_dir / f.name))
             try: os.rmdir(timeseries_raw_dir)
             except OSError: pass
-
-    if not summary_file.exists():
-        pd.DataFrame().to_csv(summary_file, index=False)
 
 
 def _is_job_running(job_name_prefix: str) -> bool:

@@ -1,4 +1,5 @@
-# FILE: scripts/paper_figures/fig5_asymmetric_patches.py (Standardized & Robust Version)
+# FILE: scripts/paper_figures/fig5_asymmetric_patches.py (Corrected Data Combination)
+
 import argparse
 import os
 import sys
@@ -6,6 +7,7 @@ import json
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def get_project_root():
@@ -13,12 +15,9 @@ def get_project_root():
 
 
 def extract_env_name(env_def_json):
+    """Extracts the 'name' from the env_definition JSON string."""
     try:
-        # The parameter from the CSV might be a string representation of a dict
-        if isinstance(env_def_json, str):
-            env_def = json.loads(env_def_json)
-        else:  # Or it might already be a dict
-            env_def = env_def_json
+        env_def = json.loads(env_def_json)
         return env_def.get("name", "unknown")
     except (json.JSONDecodeError, TypeError):
         return "unknown"
@@ -28,49 +27,76 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate Figure 5: Bet-Hedging in Asymmetric Environments."
     )
-    parser.add_argument("campaign_id")
+    parser.add_argument("asymmetric_campaign")
+    parser.add_argument(
+        "symmetric_campaign"
+    )  # Takes the symmetric campaign as the second argument
     args = parser.parse_args()
     project_root = get_project_root()
-    summary_path = os.path.join(
+
+    path_asym = os.path.join(
         project_root,
         "data",
-        args.campaign_id,
+        args.asymmetric_campaign,
         "analysis",
-        f"{args.campaign_id}_summary_aggregated.csv",
+        f"{args.asymmetric_campaign}_summary_aggregated.csv",
     )
+    path_sym = os.path.join(
+        project_root,
+        "data",
+        args.symmetric_campaign,
+        "analysis",
+        f"{args.symmetric_campaign}_summary_aggregated.csv",
+    )
+    output_path = os.path.join(
+        project_root,
+        "data",
+        args.asymmetric_campaign,
+        "analysis",
+        "figure5_asymmetric_patches.png",
+    )
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     try:
-        df = pd.read_csv(summary_path)
-    except (FileNotFoundError, pd.errors.EmptyDataError):
-        df = pd.DataFrame()
+        df_asym = pd.read_csv(path_asym)
+        df_sym = pd.read_csv(path_sym)
+    except (FileNotFoundError, pd.errors.EmptyDataError) as e:
+        print(f"Error: Missing or empty data file. {e}", file=sys.stderr)
+        sys.exit(1)
 
-    output_dir = os.path.join(project_root, "data", args.campaign_id, "analysis")
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "figure5_asymmetric_patches.png")
+    # --- ROBUST DATA PREPARATION ---
+    # 1. Prepare the asymmetric dataset
+    df_asym["s"] = df_asym["b_m"] - 1.0
+    df_asym["env_name"] = df_asym["env_definition"].apply(extract_env_name)
 
-    if df.empty:
-        print(
-            f"Warning: No data found for campaign '{args.campaign_id}'. Cannot generate Figure 5."
-        )
-        fig, _ = plt.subplots()
-        fig.text(0.5, 0.5, "Figure 5: No Data Available", ha="center", va="center")
-        plt.savefig(output_path, dpi=300)
-        sys.exit(0)
+    # 2. Prepare the symmetric dataset (only need the 60_60 case)
+    df_sym["s"] = df_sym["b_m"] - 1.0
+    df_sym_60 = df_sym[df_sym["patch_width"] == 60].copy()
+    df_sym_60["env_name"] = "60_60"
 
-    print(f"Loaded {len(df)} simulation results.")
-    df["s"] = df["b_m"] - 1.0
-    df["env_name"] = df["env_definition"].apply(extract_env_name)
+    # 3. Define the columns needed for the plot to ensure perfect alignment
+    plot_columns = ["s", "k_total", "phi", "avg_front_speed", "env_name"]
+
+    # 4. Concatenate the prepared dataframes
+    df_plot = pd.concat(
+        [df_asym[plot_columns], df_sym_60[plot_columns]], ignore_index=True
+    )
+    # --- END DATA PREPARATION ---
+
+    # Define a clear order for the environments in the plot
     env_order = ["30_90", "60_60", "90_30", "scrambled_60_60"]
-    df["env_name"] = pd.Categorical(df["env_name"], categories=env_order, ordered=True)
+    df_plot["env_name"] = pd.Categorical(
+        df_plot["env_name"], categories=env_order, ordered=True
+    )
 
     sns.set_theme(style="ticks", context="talk")
     g = sns.relplot(
-        data=df,
+        data=df_plot,
         x="k_total",
         y="avg_front_speed",
         hue="phi",
         col="s",
-        row="env_name",
+        row="env_name",  # This will now work correctly
         kind="line",
         marker="o",
         height=4,
@@ -82,11 +108,12 @@ def main():
     g.set_xlabels(r"Switching Rate, $k_{total}$")
     g.set_ylabels("Mean Front Speed, $v$")
     g.set(xscale="log")
+    g.set_titles(row_template="{row_name}", col_template="s = {col_name:.2f}")
     g.fig.suptitle(
         "Figure 5: Front Speed in Asymmetric Environments", y=1.03, fontsize=24
     )
     g.legend.set_title(r"Bias, $\phi$")
-    sns.move_legend(g, "upper left", bbox_to_anchor=(1, 1))
+    sns.move_legend(g, "upper left", bbox_to_anchor=(1.02, 1))
 
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     print(f"\nFigure 5 saved to {output_path}")

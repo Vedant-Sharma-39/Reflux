@@ -1,3 +1,0 @@
-{"id": "task1"}
-{"id": "task2"}
-{"id": "task3"}

@@ -205,6 +205,130 @@ class FrontDynamicsTracker(MetricTracker):
     def finalize(self) -> Dict[str, Any]:
         return {"front_dynamics": self.history}
 
+class RecoveryDynamicsTracker(MetricTracker):
+    """
+    Exhaustive tracker for recovery/relaxation experiments.
+    - Logs a detailed timeseries of the relaxation process.
+    - After relaxation, samples steady-state properties of the new equilibrium.
+    """
+    def __init__(
+        self, sim: "GillespieSimulation",
+        timeseries_interval: float,
+        warmup_time_ss: float, # SS = Steady State
+        num_samples_ss: int,
+        sample_interval_ss: float,
+        **kwargs
+    ):
+        super().__init__(sim=sim, **kwargs)
+        self.timeseries_interval = timeseries_interval
+        self.warmup_time_ss = warmup_time_ss
+        self.num_samples_ss = num_samples_ss
+        self.sample_interval_ss = sample_interval_ss
+        
+        # For timeseries part
+        self.next_log_time = 0.0
+        self.timeseries_history = []
+        
+        # For steady-state part
+        self.is_warmed_up = False
+        self.next_sample_time_ss = 0.0
+        self.samples_taken_ss = 0
+        self.mutant_fraction_samples_ss = []
+        self.front_speed_samples_ss = []
+        self.last_sample_q_ss = 0.0
+        self.last_sample_time_ss = 0.0
+
+    def after_step_hook(self):
+        # --- Part 1: Log the timeseries continuously ---
+        while self.sim.time >= self.next_log_time:
+            self.timeseries_history.append({
+                "time": self.next_log_time,
+                "mutant_fraction": self.sim.mutant_fraction,
+            })
+            self.next_log_time += self.timeseries_interval
+
+        # --- Part 2: Sample for steady-state properties after warmup ---
+        if not self.is_warmed_up and self.sim.time >= self.warmup_time_ss:
+            self.is_warmed_up = True
+            self.last_sample_q_ss = self.sim.mean_front_position
+            self.last_sample_time_ss = self.sim.time
+            self.next_sample_time_ss = self.sim.time + self.sample_interval_ss
+
+        if self.is_warmed_up and self.sim.time >= self.next_sample_time_ss and self.samples_taken_ss < self.num_samples_ss:
+            current_q = self.sim.mean_front_position
+            current_time = self.sim.time
+            delta_q = current_q - self.last_sample_q_ss
+            delta_t = current_time - self.last_sample_time_ss
+            
+            self.mutant_fraction_samples_ss.append(self.sim.mutant_fraction)
+            self.front_speed_samples_ss.append(delta_q / delta_t if delta_t > 1e-9 else 0.0)
+
+            self.last_sample_q_ss = current_q
+            self.last_sample_time_ss = current_time
+            self.next_sample_time_ss += self.sample_interval_ss
+            self.samples_taken_ss += 1
+
+    def finalize(self) -> Dict[str, Any]:
+        return {
+            "timeseries": self.timeseries_history,
+            "avg_rho_M_final": np.mean(self.mutant_fraction_samples_ss) if self.mutant_fraction_samples_ss else np.nan,
+            "var_rho_M_final": np.var(self.mutant_fraction_samples_ss, ddof=1) if len(self.mutant_fraction_samples_ss) > 1 else np.nan,
+            "avg_front_speed_final": np.mean(self.front_speed_samples_ss) if self.front_speed_samples_ss else np.nan,
+        }
+
+class HomogeneousDynamicsTracker(MetricTracker):
+    """
+    Enhanced version of SteadyStatePropertiesTracker for precise measurements
+    in homogeneous environments. Adds front speed calculation.
+    """
+    def __init__(self, sim: "GillespieSimulation", warmup_time: float, num_samples: int, sample_interval: float, **kwargs):
+        super().__init__(sim=sim, **kwargs)
+        self.warmup_time = warmup_time
+        self.num_samples = num_samples
+        self.sample_interval = sample_interval
+        
+        self.is_warmed_up = False
+        self.next_sample_time = 0.0
+        self.samples_taken = 0
+        
+        self.mutant_fraction_samples = []
+        self.front_speed_samples = []
+        
+        self.last_sample_q = 0.0
+        self.last_sample_time = 0.0
+
+    def is_done(self) -> bool:
+        return self.samples_taken >= self.num_samples
+
+    def after_step_hook(self):
+        if not self.is_warmed_up and self.sim.time >= self.warmup_time:
+            self.is_warmed_up = True
+            self.last_sample_q = self.sim.mean_front_position
+            self.last_sample_time = self.sim.time
+            self.next_sample_time = self.sim.time + self.sample_interval
+
+        if self.is_warmed_up and self.sim.time >= self.next_sample_time and not self.is_done():
+            current_q = self.sim.mean_front_position
+            current_time = self.sim.time
+            delta_q = current_q - self.last_sample_q
+            delta_t = current_time - self.last_sample_time
+            
+            self.mutant_fraction_samples.append(self.sim.mutant_fraction)
+            self.front_speed_samples.append(delta_q / delta_t if delta_t > 1e-9 else 0.0)
+
+            self.last_sample_q = current_q
+            self.last_sample_time = current_time
+            self.next_sample_time += self.sample_interval
+            self.samples_taken += 1
+
+    def finalize(self) -> Dict[str, Any]:
+        return {
+            "avg_rho_M": np.mean(self.mutant_fraction_samples) if self.mutant_fraction_samples else np.nan,
+            "var_rho_M": np.var(self.mutant_fraction_samples, ddof=1) if len(self.mutant_fraction_samples) > 1 else np.nan,
+            "avg_front_speed": np.mean(self.front_speed_samples) if self.front_speed_samples else np.nan,
+        }
+
+
 
 class MetricsManager:
     def __init__(self):
