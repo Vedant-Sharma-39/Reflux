@@ -1,79 +1,80 @@
 # FILE: src/config.py
-# The definitive configuration file for all experiments.
-# [v3 - Standardized Slurm time format to HH:MM:SS for universal compatibility]
+# The definitive configuration for the final publication run.
+# HPC parameters have been recalculated for efficiency and completeness.
+
+import numpy as np
 
 # ==============================================================================
-# 1. PARAMETER GRIDS (Reusable parameter lists)
+# 1. FINAL PARAMETER GRIDS
+# These grids provide comprehensive coverage for the final analysis.
 # ==============================================================================
 PARAM_GRID = {
-    "bm_deleterious_wide": [0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 1.0],
-    "bm_deleterious_narrow": [0.75, 0.85, 0.95],
+    # --- Selection Grids (b_m) ---
+    "bm_final_wide": np.round(
+        np.linspace(0.1, 1.0, 10), 2
+    ).tolist(),  # s from -0.9 to 0.0
+    "bm_final_narrow": np.round(
+        np.linspace(0.8, 1.0, 5), 2
+    ).tolist(),  # s from -0.2 to 0.0
+    # --- Switching Bias Grids (phi) ---
+    "phi_final_full": np.round(
+        np.linspace(-1.0, 1.0, 9), 2
+    ).tolist(),  # Full symmetric range
+    "phi_final_asymmetric": np.round(
+        np.linspace(-1.0, 0.5, 7), 2
+    ).tolist(),  # Focus on polluting/unbiased
+    # --- Switching Rate Grids (k_total) ---
+    "k_total_final_log": np.round(np.logspace(-2, 1, 10), 4).tolist(),  # 0.01 to 10
+    # --- Geometric Grids ---
     "width_scan": [64, 128, 256, 512],
-    "phi_scan": [-1.0, -0.5, 0.0, 0.5, 1.0],
-    "phi_scan_bet_hedging": [-1.0, -0.9, -0.7, -0.5, -0.2, 0.0, 0.5],
-    "k_total_scan_coarse": [0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0],
-    "k_total_scan_fine": [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0],
-    "k_total_scan_bet_hedging": [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0],
     "patch_width_scan": [30, 60, 120],
     "ic_control_scan": [0],  # Pure WT (generalist) control
-
-    # --- Refined Parameter Grids for Asymmetric Patch Experiment ---
-    "phi_scan_asymmetric": [-1.0, -0.9, -0.8, -0.7, -0.6, -0.5, -0.4, -0.2, 0.0],
+    # --- Environment Definitions ---
+    "env_bet_hedging": {0: {"b_wt": 1.0}, 1: {"b_wt": 0.0, "b_m": 1.0}},
     "env_asymmetric_cycle_refined": [
         {
             "name": "30_90",
-            "cycle_length": 120,
             "patches": [
                 {"id": 0, "width": 30, "params": {"b_wt": 1.0}},
-                {"id": 1, "width": 90, "params": {"b_wt": 0.0, "b_m": 1.0}}
-            ]
+                {"id": 1, "width": 90, "params": {"b_wt": 0.0, "b_m": 1.0}},
+            ],
         },
         {
             "name": "60_60",
-            "cycle_length": 120,
             "patches": [
                 {"id": 0, "width": 60, "params": {"b_wt": 1.0}},
-                {"id": 1, "width": 60, "params": {"b_wt": 0.0, "b_m": 1.0}}
-            ]
+                {"id": 1, "width": 60, "params": {"b_wt": 0.0, "b_m": 1.0}},
+            ],
         },
         {
             "name": "90_30",
-            "cycle_length": 120,
             "patches": [
                 {"id": 0, "width": 90, "params": {"b_wt": 1.0}},
-                {"id": 1, "width": 30, "params": {"b_wt": 0.0, "b_m": 1.0}}
-            ]
+                {"id": 1, "width": 30, "params": {"b_wt": 0.0, "b_m": 1.0}},
+            ],
         },
         {
             "name": "scrambled_60_60",
             "scrambled": True,
-            "cycle_length": 120,
             "avg_patch_width": 60,
             "patches": [
                 {"id": 0, "proportion": 0.5, "params": {"b_wt": 1.0}},
-                {"id": 1, "proportion": 0.5, "params": {"b_wt": 0.0, "b_m": 1.0}}
-            ]
-        }
+                {"id": 1, "proportion": 0.5, "params": {"b_wt": 0.0, "b_m": 1.0}},
+            ],
+        },
     ],
-
-    "env_bet_hedging": {
-        0: {"b_wt": 1.0},
-        1: {"b_wt": 0.0, "b_m": 1.0},
-    },
 }
 
 # ==============================================================================
-# 2. EXPERIMENT DEFINITIONS
+# 2. FINAL EXPERIMENT DEFINITIONS
 # ==============================================================================
 EXPERIMENTS = {
+    # --- Figure 1 Campaigns ---
     "boundary_analysis": {
         "campaign_id": "fig1_boundary_analysis",
         "run_mode": "calibration",
-        "hpc_params": {
-            "time": "02:00:00",
-            "mem": "1G",
-            "sims_per_task": 50,
-        },  # FIX: 0-2 -> 02
+        # Total simulations: 10 (b_m) * 200 (reps) = 2,000
+        "hpc_params": {"time": "05:30:00", "mem": "1G", "sims_per_task": 50},
         "sim_sets": {
             "main": {
                 "base_params": {
@@ -86,18 +87,15 @@ EXPERIMENTS = {
                     "initial_mutant_patch_size": 128,
                     "max_steps": 2000000,
                 },
-                "grid_params": {"b_m": "bm_deleterious_wide"},
+                "grid_params": {"b_m": "bm_final_wide"},
             }
         },
     },
     "kpz_scaling": {
         "campaign_id": "fig1_kpz_scaling",
         "run_mode": "diffusion",
-        "hpc_params": {
-            "time": "02:00:00",
-            "mem": "1G",
-            "sims_per_task": 40,
-        },  # FIX: 0-12 -> 12
+        # Total simulations: 10 (b_m) * 4 (width) * 100 (reps) = 4,000
+        "hpc_params": {"time": "04:30:00", "mem": "2G", "sims_per_task": 40},
         "sim_sets": {
             "main": {
                 "base_params": {
@@ -109,18 +107,16 @@ EXPERIMENTS = {
                     "initial_mutant_patch_size": 0,
                     "max_steps": 5000000,
                 },
-                "grid_params": {"b_m": "bm_deleterious_wide", "width": "width_scan"},
+                "grid_params": {"b_m": "bm_final_wide", "width": "width_scan"},
             }
         },
     },
+    # --- Figure 2 Campaign ---
     "phase_diagram": {
         "campaign_id": "fig2_phase_diagram",
         "run_mode": "phase_diagram",
-        "hpc_params": {
-            "time": "01:00:00",
-            "mem": "1G",
-            "sims_per_task": 50,
-        },  # FIX: 0-04 -> 04
+        # Total simulations: 10 (b_m) * 9 (phi) * 10 (k) * 50 (reps) = 45,000
+        "hpc_params": {"time": "05:30:00", "mem": "2G", "sims_per_task": 150},
         "sim_sets": {
             "main": {
                 "base_params": {
@@ -133,48 +129,19 @@ EXPERIMENTS = {
                     "initial_condition_type": "mixed",
                 },
                 "grid_params": {
-                    "b_m": "bm_deleterious_wide",
-                    "phi": "phi_scan",
-                    "k_total": "k_total_scan_coarse",
+                    "b_m": "bm_final_wide",
+                    "phi": "phi_final_full",
+                    "k_total": "k_total_final_log",
                 },
             }
         },
     },
-    "relaxation_dynamics": {
-        "campaign_id": "fig4_relaxation",
-        "run_mode": "relaxation",
-        "hpc_params": {
-            "time": "01:00:00",
-            "mem": "2G",
-            "sims_per_task": 40,
-        },  # FIX: 0-06 -> 06
-        "sim_sets": {
-            "main": {
-                "base_params": {
-                    "width": 256,
-                    "length": 8192,
-                    "phi": 0.0,
-                    "num_replicates": 50,
-                    "initial_condition_type": "patch",
-                    "initial_mutant_patch_size": "width",
-                    "total_run_time": 4000.0,
-                    "sample_interval": 15.0,
-                },
-                "grid_params": {
-                    "b_m": "bm_deleterious_wide",
-                    "k_total": "k_total_scan_coarse",
-                },
-            }
-        },
-    },
+    # --- Figure 3 Campaign ---
     "bet_hedging_final": {
         "campaign_id": "fig3_bet_hedging_final",
         "run_mode": "bet_hedging_converged",
-        "hpc_params": {
-            "time": "01:00:00",
-            "mem": "2G",
-            "sims_per_task": 20,
-        },
+        # Total simulations: (5*9*10*3*32) + (5*3*1*32) = 43,200 + 480 = 43,680
+        "hpc_params": {"time": "11:00:00", "mem": "2G", "sims_per_task": 100},
         "sim_sets": {
             "main_scan": {
                 "base_params": {
@@ -188,9 +155,9 @@ EXPERIMENTS = {
                     "convergence_threshold": 0.01,
                 },
                 "grid_params": {
-                    "b_m": "bm_deleterious_narrow",
-                    "phi": "phi_scan_bet_hedging",
-                    "k_total": "k_total_scan_bet_hedging",
+                    "b_m": "bm_final_narrow",
+                    "phi": "phi_final_full",
+                    "k_total": "k_total_final_log",
                     "patch_width": "patch_width_scan",
                 },
             },
@@ -208,21 +175,41 @@ EXPERIMENTS = {
                     "convergence_threshold": 0.01,
                 },
                 "grid_params": {
-                    "b_m": "bm_deleterious_narrow",
+                    "b_m": "bm_final_narrow",
                     "patch_width": "patch_width_scan",
                     "initial_mutant_patch_size": "ic_control_scan",
                 },
             },
         },
     },
+    # --- Figure 4 Campaign ---
+    "relaxation_dynamics": {
+        "campaign_id": "fig4_relaxation",
+        "run_mode": "relaxation",
+        # Total simulations: 10 (b_m) * 10 (k) * 50 (reps) = 5,000
+        "hpc_params": {"time": "04:30:00", "mem": "2G", "sims_per_task": 100},
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 256,
+                    "length": 8192,
+                    "phi": 0.0,
+                    "num_replicates": 50,
+                    "initial_condition_type": "patch",
+                    "initial_mutant_patch_size": "width",
+                    "total_run_time": 4000.0,
+                    "sample_interval": 15.0,
+                },
+                "grid_params": {"b_m": "bm_final_wide", "k_total": "k_total_final_log"},
+            }
+        },
+    },
+    # --- Figure 5 Campaign ---
     "asymmetric_patches": {
         "campaign_id": "fig5_asymmetric_patches",
         "run_mode": "bet_hedging_converged",
-        "hpc_params": {
-            "time": "02:00:00",
-            "mem": "2G",
-            "sims_per_task": 20,
-        },
+        # Total simulations: 5 (b_m) * 7 (phi) * 10 (k) * 4 (env) * 32 (reps) = 44,800
+        "hpc_params": {"time": "09:00:00", "mem": "2G", "sims_per_task": 150},
         "sim_sets": {
             "main": {
                 "base_params": {
@@ -235,11 +222,39 @@ EXPERIMENTS = {
                     "convergence_threshold": 0.01,
                 },
                 "grid_params": {
-                    "b_m": "bm_deleterious_narrow",
-                    "phi": "phi_scan_asymmetric",
-                    "k_total": "k_total_scan_bet_hedging",
+                    "b_m": "bm_final_narrow",
+                    "phi": "phi_final_asymmetric",
+                    "k_total": "k_total_final_log",
                     "env_definition": "env_asymmetric_cycle_refined",
                 },
+            }
+        },
+    },
+    "workflow_debug_test": {
+        "campaign_id": "debug_workflow",
+        "run_mode": "phase_diagram",
+        "hpc_params": {
+            "time": "00:10:00",  # 10 minutes is a safe, short time
+            "mem": "1G",
+            "sims_per_task": 1,
+            "ntasks": 1,
+            "cpus_per_task": 1,
+        },
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 32,
+                    "length": 64,
+                    "num_replicates": 1,
+                    "b_m": 0.9,
+                    "k_total": 0.1,
+                    "phi": 0.0,
+                    "initial_condition_type": "mixed",
+                    "warmup_time": 1.0,
+                    "num_samples": 1,
+                    "sample_interval": 1.0,
+                },
+                "grid_params": {},
             }
         },
     },

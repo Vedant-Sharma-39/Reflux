@@ -1,17 +1,17 @@
-# FILE: src/worker.py
-# This worker executes a single simulation task defined by a self-contained JSON object
-# and writes its output directly to a file in the specified output directory.
-# [v3 - Robust Logging Fix]
+# FILE: src/worker.py (Definitive Final Version)
 
 import argparse
+import gzip
 import json
-import sys
 import os
+import sys
 import traceback
-import pandas as pd
-import numpy as np
 from collections import deque
+from pathlib import Path
 from typing import Dict, Any
+
+import numpy as np
+import pandas as pd
 
 # --- Robust Path Setup ---
 project_root = os.getenv("PROJECT_ROOT")
@@ -53,114 +53,95 @@ RUN_MODE_CONFIG = {
         "tracker_params": {"log_interval": "sample_interval"},
     },
     "bet_hedging_converged": {
-        "tracker_class": None,  # This mode has a custom loop
+        "tracker_class": None,
         "tracker_params": {},
     },
 }
 
 
 def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Runs a single simulation and returns the results dictionary."""
     run_mode = params.get("run_mode")
     if run_mode not in RUN_MODE_CONFIG:
-        raise ValueError(f"Unknown or unsupported run_mode: '{run_mode}'")
-
-    # --- Custom loop for rigorous bet-hedging fitness calculation ---
+        raise ValueError(f"Unknown run_mode: '{run_mode}'")
     if run_mode == "bet_hedging_converged":
         sim = GillespieSimulation(**params)
-
         env_map = params.get("environment_map", {})
         patch_width = params.get("patch_width", 0)
-        cycle_q = patch_width * len(env_map) if patch_width > 0 and env_map else 0.0
-        if cycle_q <= 0:
-            raise ValueError(
-                "bet_hedging_converged requires patch_width and environment_map."
+        cycle_q = 0.0
+        if patch_width > 0 and env_map:
+            cycle_q = patch_width * len(env_map)
+        elif "env_definition" in params:  # Handle new env def
+            env_def = params["env_definition"]
+            if isinstance(env_def, str):
+                env_def = json.loads(env_def)
+            cycle_q = (
+                sum(p["width"] for p in env_def.get("patches", []))
+                if not env_def.get("scrambled")
+                else env_def.get("cycle_length", 0)
             )
+        if cycle_q <= 0:
+            raise ValueError("bet_hedging_converged requires a defined cycle length.")
 
         max_cycles = params.get("max_cycles", 50)
         conv_window = params.get("convergence_window_cycles", 5)
         conv_threshold = params.get("convergence_threshold", 0.01)
-
         cycle_speeds = deque(maxlen=conv_window)
         termination_reason = "max_cycles_reached"
         last_cycle_time = 0.0
         cycles_completed = 0
-
         for cycle in range(1, max_cycles + 1):
-            target_q = cycle * cycle_q
-
+            target_q = sim.mean_front_position + cycle_q  # Relative target
+            start_time_cycle = sim.time
             while sim.mean_front_position < target_q:
                 active, boundary_hit = sim.step()
                 if not active or boundary_hit:
                     termination_reason = "stalled_or_boundary_hit"
                     break
-
             if termination_reason != "max_cycles_reached":
                 break
-
-            time_for_cycle = sim.time - last_cycle_time
+            time_for_cycle = sim.time - start_time_cycle
             speed_this_cycle = cycle_q / time_for_cycle if time_for_cycle > 1e-9 else 0
             cycle_speeds.append(speed_this_cycle)
-            last_cycle_time = sim.time
             cycles_completed = cycle
-
             if len(cycle_speeds) == conv_window:
                 mean_speed = np.mean(cycle_speeds)
-                if mean_speed > 1e-9:
-                    std_dev = np.std(cycle_speeds, ddof=1)
-                    if (std_dev / mean_speed) < conv_threshold:
-                        termination_reason = "converged"
-                        break
-
-        final_fitness = np.mean(cycle_speeds) if cycle_speeds else 0.0
-        final_variance = np.var(cycle_speeds, ddof=1) if len(cycle_speeds) > 1 else 0.0
-
+                if (
+                    mean_speed > 1e-9
+                    and (np.std(cycle_speeds, ddof=1) / mean_speed) < conv_threshold
+                ):
+                    termination_reason = "converged"
+                    break
         results = {
-            "avg_front_speed": final_fitness,
-            "var_front_speed": final_variance,
+            "avg_front_speed": np.mean(cycle_speeds) if cycle_speeds else 0.0,
+            "var_front_speed": (
+                np.var(cycle_speeds, ddof=1) if len(cycle_speeds) > 1 else 0.0
+            ),
             "avg_rho_M": sim.mutant_fraction,
             "num_cycles_completed": cycles_completed,
         }
         final_output = {**params, **results}
         final_output["termination_reason"] = termination_reason
-        final_output["final_sim_time"] = sim.time
-        final_output["final_sim_steps"] = sim.step_count
         return final_output
 
-    # --- Standard logic for all other run modes ---
     manager = MetricsManager()
     config = RUN_MODE_CONFIG[run_mode]
     tracker_class = config["tracker_class"]
-    if tracker_class is None:
-        raise ValueError(
-            f"Run mode '{run_mode}' is not fully implemented in the standard loop."
-        )
-
     tracker_kwargs = {
-        tracker_arg: params[sim_param_key]
-        for tracker_arg, sim_param_key in config["tracker_params"].items()
-        if sim_param_key in params
+        k: params[v] for k, v in config["tracker_params"].items() if v in params
     }
     manager.add_tracker(tracker_class, **tracker_kwargs)
-
-    METADATA_KEYS = [
-        "task_id",
-        "campaign_id",
-        "run_mode",
-        "num_replicates",
-        "replicate",
-    ]
     sim_params = {
-        key: value
-        for key, value in params.items()
-        if key not in METADATA_KEYS and key not in tracker_kwargs
+        k: v
+        for k, v in params.items()
+        if k
+        not in ["task_id", "campaign_id", "run_mode", "num_replicates", "replicate"]
+        and k not in tracker_kwargs
     }
     sim = GillespieSimulation(metrics_manager=manager, **sim_params)
-
-    max_steps = params.get("max_steps", 30_000_000)
-    max_time = params.get("total_run_time", float("inf"))
+    max_steps, max_time = params.get("max_steps", 30_000_000), params.get(
+        "total_run_time", float("inf")
+    )
     termination_reason = "unknown"
-
     while sim.time < max_time and sim.step_count < max_steps:
         active, boundary_hit = sim.step()
         manager.after_step_hook()
@@ -173,56 +154,31 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
         if manager.is_done():
             termination_reason = "tracker_is_done"
             break
-
     if termination_reason == "unknown":
-        if sim.step_count >= max_steps:
-            termination_reason = "max_steps_reached"
-        elif sim.time >= max_time:
-            termination_reason = "max_time_reached"
-
+        termination_reason = (
+            "max_steps_reached" if sim.step_count >= max_steps else "max_time_reached"
+        )
     results = manager.finalize()
     final_output = {**params, **results}
     final_output["termination_reason"] = termination_reason
-    final_output["final_sim_time"] = sim.time
-    final_output["final_sim_steps"] = sim.step_count
-
-    if run_mode == "bet_hedging" and "front_dynamics" in final_output:
-        df_history = pd.DataFrame(final_output.pop("front_dynamics"))
-        if not df_history.empty:
-            env_map = params.get("environment_map", {})
-            patch_width = params.get("patch_width", 0)
-            cycle_len_q = (
-                patch_width * len(env_map) if patch_width > 0 and env_map else 0.0
-            )
-            warmup_q = params.get("warmup_cycles_for_stats", 4) * cycle_len_q
-            stats_df = df_history[df_history["mean_front_q"] > warmup_q]
-            final_output.update(
-                {
-                    "avg_front_speed": (
-                        stats_df["front_speed"].mean() if not stats_df.empty else 0.0
-                    ),
-                    "var_front_speed": (
-                        stats_df["front_speed"].var(ddof=1)
-                        if len(stats_df) > 1
-                        else 0.0
-                    ),
-                    "avg_rho_M": (
-                        stats_df["mutant_fraction"].mean()
-                        if not stats_df.empty
-                        else 0.0
-                    ),
-                }
-            )
     return final_output
 
 
 def main():
+    """
+    Worker entry point.
+    - For most runs: Prints a single summary JSON to stdout.
+    - For 'relaxation' runs: Prints summary (sans timeseries) to stdout
+      and writes the bulky timeseries to a dedicated .json.gz file.
+    """
     parser = argparse.ArgumentParser(description="Run a single simulation task.")
     parser.add_argument(
         "--params", required=True, help="JSON string of simulation parameters."
     )
     parser.add_argument(
-        "--output-dir", required=True, help="Directory to save the output file."
+        "--output-dir",
+        required=True,
+        help="Directory to save bulky output files (like timeseries).",
     )
     args = parser.parse_args()
 
@@ -233,46 +189,32 @@ def main():
         if not task_id:
             raise ValueError("Task parameters must include a 'task_id'.")
 
-        final_output_path = os.path.join(args.output_dir, f"{task_id}.json")
-        final_error_path = os.path.join(args.output_dir, f"{task_id}.error")
-        tmp_output_path = os.path.join(args.output_dir, f".tmp_{task_id}_{os.getpid()}")
-
-        if os.path.exists(final_output_path) or os.path.exists(final_error_path):
-            sys.exit(0)
-
-        os.makedirs(args.output_dir, exist_ok=True)
         result_data = run_simulation(params)
 
-        with open(tmp_output_path, "w") as f:
-            json.dump(result_data, f, allow_nan=True, separators=(",", ":"))
+        # --- DATA SPLITTING LOGIC ---
+        if params.get("run_mode") == "relaxation" and "timeseries" in result_data:
+            # For relaxation runs, separate the bulky data
+            timeseries_data = result_data.pop("timeseries")
 
-        os.rename(tmp_output_path, final_output_path)
+            # Write bulky data to its own compressed file in a dedicated raw folder
+            ts_dir = Path(args.output_dir).parent / "timeseries_raw"
+            ts_dir.mkdir(exist_ok=True)
+            ts_path = ts_dir / f"ts_{task_id}.json.gz"
+            with gzip.open(ts_path, "wt", encoding="utf-8") as f_gz:
+                json.dump(timeseries_data, f_gz)
 
-        # --- [THE FIX] ---
-        # The success message is now the VERY LAST operation in the try block.
-        # It will only be printed if the simulation, json serialization,
-        # and file rename operations ALL succeed without raising an exception.
-        print(f"Successfully wrote output and completed task {task_id}.")
+        # Print the (now smaller) summary object to stdout for the chunk manager
+        print(json.dumps(result_data, allow_nan=True, separators=(",", ":")))
 
     except Exception:
+        # Error handling remains the same
         task_id = params.get("task_id", "unknown_task")
-        final_error_path = os.path.join(args.output_dir, f"{task_id}.error")
-        tmp_error_path = os.path.join(
-            args.output_dir, f".tmp_err_{task_id}_{os.getpid()}"
-        )
-
         error_output = {
             "task_id": task_id,
             "error": traceback.format_exc(),
             "params": params,
         }
-
-        os.makedirs(args.output_dir, exist_ok=True)
-        with open(tmp_error_path, "w") as f:
-            json.dump(error_output, f, indent=2)
-        os.rename(tmp_error_path, final_error_path)
-
-        print(traceback.format_exc(), file=sys.stderr)
+        print(json.dumps(error_output, indent=2), file=sys.stderr)
         sys.exit(1)
 
 

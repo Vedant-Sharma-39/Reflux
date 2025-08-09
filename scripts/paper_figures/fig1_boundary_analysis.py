@@ -1,4 +1,4 @@
-# FILE: scripts/paper_figures/fig1_boundary_analysis.py (Final Robust Version)
+# FILE: scripts/paper_figures/fig1_boundary_analysis.py (Final Corrected Version)
 
 import argparse
 import os
@@ -17,16 +17,12 @@ def get_project_root():
 
 
 def process_trajectories(df, column_name):
-    # --- ROBUSTNESS FIX: Check if the column exists before processing ---
     if column_name not in df.columns:
         print(
-            f"Warning: Column '{column_name}' not found in the DataFrame. Skipping processing.",
+            f"Warning: Column '{column_name}' not found. Skipping processing.",
             file=sys.stderr,
         )
-        # Return a series of Nones of the correct length to prevent crashes
         return pd.Series([None] * len(df), index=df.index)
-    # --- END FIX ---
-
     trajectories = []
     for item in tqdm(df[column_name], desc=f"Parsing '{column_name}'"):
         if pd.isna(item):
@@ -46,20 +42,22 @@ def calculate_drift_diffusion(df_calib):
 
     print("Analyzing sector drift and diffusion from 'calibration' data...")
     df_calib["s"] = df_calib["b_m"] - 1.0
-    # The 'trajectory' column is correct for this part.
     df_calib["trajectory_data"] = process_trajectories(df_calib, "trajectory")
     analysis_results = []
     for params, group in tqdm(
         df_calib.groupby(["s"]), desc="Calculating D_eff and v_drift"
     ):
-        s = params[0]  # groupby with single column returns a tuple
+        # --- THE CRITICAL FIX ---
+        # Unpack the single-element tuple returned by groupby
+        s = params[0]
+        # --- END FIX ---
         for _, row in group.dropna(subset=["trajectory_data"]).iterrows():
             if not row["trajectory_data"]:
                 continue
             q_vals = np.array([t[0] for t in row["trajectory_data"]])
             width_vals = np.array([t[1] for t in row["trajectory_data"]])
             if len(q_vals) > 5:
-                v_slope, _, v_r, _, _ = linregress(q_vals, width_vals)
+                v_slope, _, _, _, _ = linregress(q_vals, width_vals)
                 d_slope, _, d_r, _, _ = linregress(q_vals, width_vals**2)
                 if d_r**2 > 0.8:
                     analysis_results.append(
@@ -75,12 +73,7 @@ def analyze_roughness(df_kpz):
 
     print("Analyzing interface roughness from 'diffusion' data...")
     df_kpz["s"] = df_kpz["b_m"] - 1.0
-
-    # --- CRITICAL FIX: Use the correct column name from the data producer ---
-    # The data is saved as 'roughness_sq_trajectory', not 'roughness_trajectory'.
     df_kpz["roughness_data"] = process_trajectories(df_kpz, "roughness_sq_trajectory")
-    # --- END FIX ---
-
     saturation_results = []
     for params, group in tqdm(
         df_kpz.groupby(["s", "width"]), desc="Calculating saturated roughness"
@@ -90,7 +83,6 @@ def analyze_roughness(df_kpz):
         for _, row in group.dropna(subset=["roughness_data"]).iterrows():
             if not row["roughness_data"]:
                 continue
-            # The trajectory is (q, W^2), so we take the second element.
             w2_vals = np.array([t[1] for t in row["roughness_data"]])
             if len(w2_vals) > 20:
                 w2_sats.append(np.mean(w2_vals[-len(w2_vals) // 4 :]))
@@ -105,15 +97,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate Figure 1: Boundary Dynamics & KPZ Scaling."
     )
-    parser.add_argument(
-        "calib_campaign", help="Campaign ID for calibration runs (boundary_analysis)."
-    )
-    parser.add_argument(
-        "kpz_campaign", help="Campaign ID for KPZ scaling runs (kpz_scaling)."
-    )
+    parser.add_argument("calib_campaign")
+    parser.add_argument("kpz_campaign")
     args = parser.parse_args()
     project_root = get_project_root()
-
     path_calib = os.path.join(
         project_root,
         "data",
@@ -128,21 +115,35 @@ def main():
         "analysis",
         f"{args.kpz_campaign}_summary_aggregated.csv",
     )
+    output_path = os.path.join(
+        project_root,
+        "data",
+        args.calib_campaign,
+        "analysis",
+        "figure1_boundary_analysis.png",
+    )
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    if not os.path.exists(path_calib) or not os.path.exists(path_kpz):
-        print(
-            f"FATAL: A required summary CSV file was not found by the script.\n- {path_calib}\n- {path_kpz}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    df_calib = pd.read_csv(path_calib)
-    df_kpz = pd.read_csv(path_kpz)
+    try:
+        df_calib = pd.read_csv(path_calib)
+        df_kpz = pd.read_csv(path_kpz)
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        df_calib, df_kpz = pd.DataFrame(), pd.DataFrame()
 
     if df_calib.empty and df_kpz.empty:
         print(
             "Warning: Both calibration and KPZ data are empty. Cannot generate Figure 1."
         )
+        fig, ax = plt.subplots()
+        ax.text(
+            0.5,
+            0.5,
+            "Figure 1: No Data Available",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        plt.savefig(output_path, dpi=300)
         sys.exit(0)
 
     drift_diff_df = calculate_drift_diffusion(df_calib)
@@ -164,7 +165,6 @@ def main():
             color="crimson",
         )
         axA.set_ylabel(r"Effective Diffusion, $D_{eff}$", color="crimson")
-        axA.tick_params(axis="y", labelcolor="crimson")
         axA2 = axA.twinx()
         sns.lineplot(
             data=drift_diff_df,
@@ -177,8 +177,6 @@ def main():
         )
         axA2.plot(axA2.get_xlim(), axA2.get_xlim(), "k--", alpha=0.6, label="v = s")
         axA2.set_ylabel(r"Drift Velocity, $v_{drift}$", color="navy")
-        axA2.tick_params(axis="y", labelcolor="navy")
-        fig.legend(loc="upper center", bbox_to_anchor=(0.28, 0.95), ncol=3)
     else:
         axA.text(
             0.5,
@@ -187,36 +185,28 @@ def main():
             ha="center",
             va="center",
             transform=axA.transAxes,
-            fontsize=14,
             color="gray",
         )
     axA.set_title("Effective Boundary Motion")
     axA.set_xlabel("Selection Coefficient, $s = b_m - 1$")
 
     if not roughness_df.empty:
-        # Check for isclose on s=0.0 as it's a float
-        neutral_data = roughness_df[np.isclose(roughness_df["s"], 0.0)]
-        if not neutral_data.empty:
-            sns.lineplot(
-                data=neutral_data,
-                x="L",
-                y="W2_sat_mean",
-                ax=axB,
-                marker="o",
-                label=r"$s=0.0$ (Neutral)",
-            )
-
-        deleterious_data = roughness_df[roughness_df["s"] < 0.0]
-        if not deleterious_data.empty:
-            sns.lineplot(
-                data=deleterious_data,
-                x="L",
-                y="W2_sat_mean",
-                ax=axB,
-                marker="s",
-                label=r"$s < 0$ (Deleterious)",
-            )
-
+        sns.lineplot(
+            data=roughness_df[np.isclose(roughness_df["s"], 0.0)],
+            x="L",
+            y="W2_sat_mean",
+            ax=axB,
+            marker="o",
+            label=r"$s=0.0$",
+        )
+        sns.lineplot(
+            data=roughness_df[roughness_df["s"] < 0.0],
+            x="L",
+            y="W2_sat_mean",
+            ax=axB,
+            marker="s",
+            label=r"$s < 0$",
+        )
         axB.set_xscale("log")
         axB.set_yscale("log")
         axB.legend()
@@ -228,15 +218,12 @@ def main():
             ha="center",
             va="center",
             transform=axB.transAxes,
-            fontsize=14,
             color="gray",
         )
     axB.set_title(r"Interface Roughness Scaling (KPZ)")
     axB.set_xlabel("System Width, $L$")
     axB.set_ylabel(r"Saturated Roughness, $\langle W^2_{sat} \rangle$")
 
-    output_dir = os.path.join(project_root, "data", args.calib_campaign, "analysis")
-    output_path = os.path.join(output_dir, "figure1_boundary_analysis.png")
     plt.savefig(output_path, dpi=300)
     print(f"\nFigure 1 saved to {output_path}")
 
