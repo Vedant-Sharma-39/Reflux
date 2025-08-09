@@ -230,22 +230,22 @@ EXPERIMENTS = {
             }
         },
     },
-    "workflow_debug_test": {
-        "campaign_id": "debug_workflow",
+    
+    "workflow_debug_2tasks": {
+        "campaign_id": "debug_workflow_2tasks",
         "run_mode": "phase_diagram",
         "hpc_params": {
-            "time": "00:10:00",  # 10 minutes is a safe, short time
+            "time": "00:10:00",
             "mem": "1G",
-            "sims_per_task": 1,
-            "ntasks": 1,
-            "cpus_per_task": 1,
+            "sims_per_task": 2, # Two sims total, so one chunk
         },
         "sim_sets": {
             "main": {
                 "base_params": {
                     "width": 32,
                     "length": 64,
-                    "num_replicates": 1,
+                    # --- CRITICAL CHANGE: 2 REPLICATES ---
+                    "num_replicates": 2,
                     "b_m": 0.9,
                     "k_total": 0.1,
                     "phi": 0.0,
@@ -254,7 +254,7 @@ EXPERIMENTS = {
                     "num_samples": 1,
                     "sample_interval": 1.0,
                 },
-                "grid_params": {},
+                "grid_params": {}, # No parameter sweeps
             }
         },
     },

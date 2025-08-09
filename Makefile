@@ -40,6 +40,10 @@ figures:
 fig1 fig2 fig3 fig4:
 	@$(MANAGER) plot $@
 
+status:
+	@$(MANAGER) status $(EXP)
+
+
 ## Debug a task from a campaign.
 ## e.g., `make debug` (interactive) or `make debug EXP=phase_diagram`
 debug:

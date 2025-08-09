@@ -1,6 +1,7 @@
 #!/bin/bash
-# FILE: scripts/run_chunk.sh (v4.3 - Corrected Worker Call)
-# This version fixes the missing --output-dir argument when calling worker.py.
+# FILE: scripts/run_chunk.sh (v4.4 - Definitive Exit Code Fix)
+# This version fixes the subtle but critical bug where `set -e` would cause
+# the script to exit prematurely when the `while read` loop finished.
 
 set -euo pipefail
 
@@ -18,7 +19,7 @@ readonly ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}
 
 # 2. ENVIRONMENT SETUP
 cd "${PROJECT_ROOT}" || exit 1
-if [ -f /etc/profile.d/modules.sh ]; then
+if [ -f /etc/profile/d/modules.sh ]; then
    source /etc/profile.d/modules.sh
 fi
 module purge >/dev/null 2>&1; module load scipy-stack/2024a
@@ -43,26 +44,26 @@ echo "INFO: Appending results to ${OUTPUT_FILE##*/}"
 num_processed=0
 num_failed=0
 
+# Use process substitution to feed lines from sed into the while loop
+# The '|| true' at the end is the critical fix. It prevents 'set -e'
+# from killing the script when the while loop finishes reading its input.
 while IFS= read -r PARAMS_JSON; do
     if [ -z "${PARAMS_JSON}" ]; then continue; fi
+    
+    # Use a "here string" (<<<) to prevent input hijacking.
     task_id=$(python3 -c "import sys, json; print(json.load(sys.stdin).get('task_id', 'unknown'))" <<< "${PARAMS_JSON}")
+
     echo -n "[$(date '+%T')] Processing task ID: ${task_id}... "
     
-    # --- THE CRITICAL FIX ---
     # The worker script must be called with both --params and --output-dir arguments.
-    # Its stdout (the summary) is redirected to the chunk file.
-    # Its stderr is redirected to the main slurm log for debugging.
     if ! python3 "src/worker.py" --params "${PARAMS_JSON}" --output-dir "${RAW_DATA_DIR}" >> "${OUTPUT_FILE}"; then
-        # The worker automatically prints a detailed error to stderr, which is captured by Slurm.
         echo "FAILED. See this log for the worker's error message."
         ((num_failed++))
     else
         echo "OK."
     fi
-    # --- END FIX ---
-
     ((num_processed++))
-done < <(sed -n "${START_LINE},${END_LINE}p" "${TASK_LIST_FILE}")
+done < <(sed -n "${START_LINE},${END_LINE}p" "${TASK_LIST_FILE}") || true
 
 echo -e "\nINFO: Chunk finished. Attempted: ${num_processed}, Failed: ${num_failed}"
 if [ "$num_failed" -gt 0 ]; then exit 1; fi
