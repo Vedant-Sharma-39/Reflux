@@ -30,7 +30,7 @@ PARAM_GRID = {
     "patch_width_scan": [30, 60, 120],
     "ic_control_scan": [0],  # Pure WT (generalist) control
     # --- Environment Definitions ---
-    "env_bet_hedging": {0: {"b_wt": 1.0}, 1: {"b_wt": 0.0, "b_m": 1.0}},
+    "env_bet_hedging": {"0": {"b_wt": 1.0}, "1": {"b_wt": 0.0, "b_m": 1.0}},
     "env_asymmetric_cycle_refined": [
         {
             "name": "30_90",
@@ -235,14 +235,13 @@ EXPERIMENTS = {
             }
         },
     },
-    
     "workflow_debug_2tasks": {
         "campaign_id": "debug_workflow_2tasks",
         "run_mode": "phase_diagram",
         "hpc_params": {
             "time": "00:10:00",
             "mem": "1G",
-            "sims_per_task": 2, # Two sims total, so one chunk
+            "sims_per_task": 2,  # Two sims total, so one chunk
         },
         "sim_sets": {
             "main": {
@@ -259,29 +258,28 @@ EXPERIMENTS = {
                     "num_samples": 1,
                     "sample_interval": 1.0,
                 },
-                "grid_params": {}, # No parameter sweeps
+                "grid_params": {},  # No parameter sweeps
             }
-        }   
+        },
     },
-    
-        "recovery_timescale": {
+    "recovery_timescale": {
         "campaign_id": "fig4_recovery_timescale",
-        "run_mode": "recovery_dynamics", # <-- Use the new purpose-built run mode
+        "run_mode": "recovery_dynamics",  # <-- Use the new purpose-built run mode
         # Total sims: 10 (k) * 9 (phi) * 5 (s) * 60 (reps) = 27,000
-        "hpc_params": { "time": "05:00:00", "mem": "2G", "sims_per_task": 80 },
+        "hpc_params": {"time": "05:00:00", "mem": "2G", "sims_per_task": 80},
         "sim_sets": {
             "main": {
                 "base_params": {
                     "width": 256,
                     "length": 8192,
                     "initial_condition_type": "patch",
-                    "initial_mutant_patch_size": "width", # Start at 100% Mutant
+                    "initial_mutant_patch_size": "width",  # Start at 100% Mutant
                     "num_replicates": 60,
                     # --- Exhaustive Metric Parameters ---
-                    "total_run_time": 5000.0,      # Run long enough for full relaxation
-                    "timeseries_interval": 10.0,   # High-resolution timeseries
-                    "warmup_time_ss": 4000.0,      # Start steady-state sampling late
-                    "num_samples_ss": 100,         # Get good stats on the final state
+                    "total_run_time": 5000.0,  # Run long enough for full relaxation
+                    "timeseries_interval": 10.0,  # High-resolution timeseries
+                    "warmup_time_ss": 4000.0,  # Start steady-state sampling late
+                    "num_samples_ss": 100,  # Get good stats on the final state
                     "sample_interval_ss": 10.0,
                 },
                 "grid_params": {
@@ -292,24 +290,23 @@ EXPERIMENTS = {
             }
         },
     },
-
     # --- NEW EXPERIMENT FOR SUPPLEMENTARY FIGURE: HOMOGENEOUS COST ---
     "homogeneous_fitness_cost": {
         "campaign_id": "sup_homogeneous_cost",
-        "run_mode": "homogeneous_dynamics", # <-- Use the new purpose-built run mode
+        "run_mode": "homogeneous_dynamics",  # <-- Use the new purpose-built run mode
         # Total sims: 10 (k) * 9 (phi) * 5 (s) * 40 (reps) = 18,000
-        "hpc_params": { "time": "04:30:00", "mem": "2G", "sims_per_task": 50 },
+        "hpc_params": {"time": "04:30:00", "mem": "2G", "sims_per_task": 50},
         "sim_sets": {
             "main": {
                 "base_params": {
                     "width": 256,
-                    "length": 8192, # Long enough to avoid boundary effects
+                    "length": 8192,  # Long enough to avoid boundary effects
                     "num_replicates": 40,
                     "initial_condition_type": "mixed",
                     # --- Exhaustive Metric Parameters ---
                     "total_run_time": 3000.0,
-                    "warmup_time": 1000.0, # Very long warmup for precise measurement
-                    "num_samples": 200,    # High number of samples
+                    "warmup_time": 1000.0,  # Very long warmup for precise measurement
+                    "num_samples": 200,  # High number of samples
                     "sample_interval": 10.0,
                 },
                 "grid_params": {
@@ -320,35 +317,4 @@ EXPERIMENTS = {
             }
         },
     },
-    
-    
-    "visualize_purging_dynamics": {
-    "campaign_id": "fig3_purging_viz",
-    "run_mode": "visualization", # A new, dedicated run mode
-    "hpc_params": {
-        "time": "01:00:00",
-        "mem": "4G", # Plotting can use more memory
-        "sims_per_task": 1, # One simulation per job for clean output
-    },
-    "sim_sets": {
-        "main": {
-            "base_params": {
-                "width": 256,
-                "length": 4096, # Long enough to see several cycles
-                "initial_condition_type": "mixed",
-                "environment_map": "env_bet_hedging",
-                "num_replicates": 3, # Just need a few examples for visualization
-                "snapshot_interval_cycles": 1, # Take a picture every environmental cycle
-                "max_cycles": 15, # Run for 15 cycles
-            },
-            "grid_params": {
-                "b_m": "bm_visualization",
-                "phi": "phi_visualization",
-                "k_total": "k_total_visualization",
-                "patch_width": "patch_width_visualization",
-            },
-        }
-    },
-    },
-
 }

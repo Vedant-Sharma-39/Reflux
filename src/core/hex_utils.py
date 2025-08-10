@@ -1,5 +1,5 @@
 # FILE: src/core/hex_utils.py
-# Manages hexagonal grid coordinates and plotting. [v13 - Flat-Top Orientation]
+# Manages hexagonal grid coordinates and plotting. [v14 - Patch Boundary Visualization]
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -58,7 +58,6 @@ class HexPlotter:
         """Calculates corners for a 'flat-top' hexagon."""
         corners = []
         for i in range(6):
-            # For flat-top, angles start at 0 degrees
             angle_deg = 60 * i
             angle_rad = np.pi / 180 * angle_deg
             x_corner = center_x + self.size * np.cos(angle_rad)
@@ -72,6 +71,7 @@ class HexPlotter:
         title: str = "",
         wt_front: Optional[Set[Hex]] = None,
         m_front: Optional[Set[Hex]] = None,
+        q_to_patch_index: Optional[np.ndarray] = None,
     ):
         if not self.fig or not self.ax:
             self.fig, self.ax = plt.subplots()
@@ -121,6 +121,25 @@ class HexPlotter:
                 zorder=10,
             )
             self.ax.add_collection(front_collection)
+
+        # --- NEW: Draw Patch Boundaries ---
+        if q_to_patch_index is not None:
+            # Find the q-coordinates where the patch index changes
+            boundary_q_indices = np.where(np.diff(q_to_patch_index) != 0)[0]
+            for q_idx in boundary_q_indices:
+                # The boundary is between q_idx and q_idx + 1
+                q_boundary = q_idx + 0.5
+                x_boundary, _ = self._axial_to_cartesian(
+                    Hex(q_boundary, 0, -q_boundary)
+                )
+                self.ax.axvline(
+                    x_boundary,
+                    color="cyan",
+                    linestyle="--",
+                    linewidth=2,
+                    zorder=20,
+                    label="Patch Boundary",
+                )
 
         self.ax.set_aspect("equal", "box")
         width_range = max_x - min_x

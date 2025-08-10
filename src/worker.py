@@ -1,4 +1,4 @@
-# FILE: src/worker.py (Definitive Final Version)
+# FILE: src/worker.py (Corrected avg_rho_M Calculation)
 
 import argparse
 import gzip
@@ -29,7 +29,7 @@ from src.core.metrics import (
     TimeSeriesTracker,
     FrontDynamicsTracker,
     RecoveryDynamicsTracker,
-    HomogeneousDynamicsTracker
+    HomogeneousDynamicsTracker,
 )
 
 RUN_MODE_CONFIG = {
@@ -58,14 +58,14 @@ RUN_MODE_CONFIG = {
         "tracker_class": None,
         "tracker_params": {},
     },
-        "recovery_dynamics": {
+    "recovery_dynamics": {
         "tracker_class": RecoveryDynamicsTracker,
         "tracker_params": {
             "timeseries_interval": "timeseries_interval",
             "warmup_time_ss": "warmup_time_ss",
             "num_samples_ss": "num_samples_ss",
             "sample_interval_ss": "sample_interval_ss",
-        }
+        },
     },
     "homogeneous_dynamics": {
         "tracker_class": HomogeneousDynamicsTracker,
@@ -73,35 +73,32 @@ RUN_MODE_CONFIG = {
             "warmup_time": "warmup_time",
             "num_samples": "num_samples",
             "sample_interval": "sample_interval",
-        }
+        },
     },
-        "visualization": {
-        "tracker_class": None, # This mode has a custom loop
+    "visualization": {
+        "tracker_class": None,  # This mode has a custom loop
         "tracker_params": {},
     },
-
 }
-
 
 
 def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
     run_mode = params.get("run_mode")
     if "env_definition" in params and isinstance(params["env_definition"], str):
         params["env_definition"] = json.loads(params["env_definition"])
-    
-    
+
     if run_mode not in RUN_MODE_CONFIG:
         raise ValueError(f"Unknown run_mode: '{run_mode}'")
-    
+
     if run_mode == "visualization":
-    # Pass necessary parameters for the model to handle plotting
-        params['output_dir_viz'] = os.path.join(
-            project_root, "data", params['campaign_id'], "images"
+        # Pass necessary parameters for the model to handle plotting
+        params["output_dir_viz"] = os.path.join(
+            project_root, "data", params["campaign_id"], "images"
         )
         sim = GillespieSimulation(**params)
         max_cycles = params.get("max_cycles", 15)
         # Calculate total distance to simulate based on cycles
-        cycle_q = sim.cycle_q_viz if hasattr(sim, 'cycle_q_viz') else 0
+        cycle_q = sim.cycle_q_viz if hasattr(sim, "cycle_q_viz") else 0
         target_q = max_cycles * cycle_q if cycle_q > 0 else sim.length - 2
 
         # Run the simulation for the specified number of cycles
@@ -109,7 +106,7 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
             active, boundary_hit = sim.step()
             if not active or boundary_hit:
                 break
-        
+
         # The result is the images on disk, so we just return a success message
         return {"status": "completed", "task_id": params.get("task_id")}
 
@@ -135,12 +132,17 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
         max_cycles = params.get("max_cycles", 50)
         conv_window = params.get("convergence_window_cycles", 5)
         conv_threshold = params.get("convergence_threshold", 0.01)
+
+        # --- FIX: Create deques for both speed and mutant fraction ---
         cycle_speeds = deque(maxlen=conv_window)
+        rho_m_samples = deque(maxlen=conv_window)
+        # --- END FIX ---
+
         termination_reason = "max_cycles_reached"
         last_cycle_time = 0.0
         cycles_completed = 0
         for cycle in range(1, max_cycles + 1):
-            target_q = sim.mean_front_position + cycle_q  # Relative target
+            target_q = sim.mean_front_position + cycle_q
             start_time_cycle = sim.time
             while sim.mean_front_position < target_q:
                 active, boundary_hit = sim.step()
@@ -149,9 +151,15 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
                     break
             if termination_reason != "max_cycles_reached":
                 break
+
             time_for_cycle = sim.time - start_time_cycle
             speed_this_cycle = cycle_q / time_for_cycle if time_for_cycle > 1e-9 else 0
+
+            # --- FIX: Sample both metrics at the end of each cycle ---
             cycle_speeds.append(speed_this_cycle)
+            rho_m_samples.append(sim.mutant_fraction)
+            # --- END FIX ---
+
             cycles_completed = cycle
             if len(cycle_speeds) == conv_window:
                 mean_speed = np.mean(cycle_speeds)
@@ -161,14 +169,18 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
                 ):
                     termination_reason = "converged"
                     break
+
+        # --- FIX: Calculate results from the sampled deques ---
         results = {
             "avg_front_speed": np.mean(cycle_speeds) if cycle_speeds else 0.0,
             "var_front_speed": (
                 np.var(cycle_speeds, ddof=1) if len(cycle_speeds) > 1 else 0.0
             ),
-            "avg_rho_M": sim.mutant_fraction,
+            "avg_rho_M": np.mean(rho_m_samples) if rho_m_samples else 0.0,
             "num_cycles_completed": cycles_completed,
         }
+        # --- END FIX ---
+
         final_output = {**params, **results}
         final_output["termination_reason"] = termination_reason
         return final_output
@@ -215,12 +227,6 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main():
-    """
-    Worker entry point.
-    - For most runs: Prints a single summary JSON to stdout.
-    - For 'relaxation' runs: Prints summary (sans timeseries) to stdout
-      and writes the bulky timeseries to a dedicated .json.gz file.
-    """
     parser = argparse.ArgumentParser(description="Run a single simulation task.")
     parser.add_argument(
         "--params", required=True, help="JSON string of simulation parameters."
@@ -241,23 +247,17 @@ def main():
 
         result_data = run_simulation(params)
 
-        # --- DATA SPLITTING LOGIC ---
         if params.get("run_mode") == "relaxation" and "timeseries" in result_data:
-            # For relaxation runs, separate the bulky data
             timeseries_data = result_data.pop("timeseries")
-
-            # Write bulky data to its own compressed file in a dedicated raw folder
             ts_dir = Path(args.output_dir).parent / "timeseries_raw"
             ts_dir.mkdir(exist_ok=True)
             ts_path = ts_dir / f"ts_{task_id}.json.gz"
             with gzip.open(ts_path, "wt", encoding="utf-8") as f_gz:
                 json.dump(timeseries_data, f_gz)
 
-        # Print the (now smaller) summary object to stdout for the chunk manager
         print(json.dumps(result_data, allow_nan=True, separators=(",", ":")))
 
     except Exception:
-        # Error handling remains the same
         task_id = params.get("task_id", "unknown_task")
         error_output = {
             "task_id": task_id,
