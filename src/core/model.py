@@ -79,13 +79,20 @@ class GillespieSimulation:
                 "task_id", "viz_task"
             )
             self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-            self.snapshot_interval_cycles = kwargs.get("snapshot_interval_cycles", 1)
-            self.cycle_q_viz = (
-                self.patch_sequence[0][1] * len(self.patch_sequence)
-                if self.patch_sequence
-                else 0
-            )
-            self.next_snapshot_q = self.cycle_q_viz
+
+            # --- NEW DYNAMIC SNAPSHOT LOGIC ---
+            self.max_snapshots = kwargs.get("max_snapshots", 5)
+            self.snapshot_q_offset = kwargs.get("snapshot_q_offset", 2.0)
+            self.snapshots_taken = 0
+
+            boundary_indices = np.where(np.diff(self.q_to_patch_index) != 0)[0]
+            # The boundary is at q_idx + 0.5. The trigger is offset units before that.
+            self.snapshot_q_triggers = [
+                (q_idx + 0.5) - self.snapshot_q_offset for q_idx in boundary_indices
+            ]
+            self.next_snapshot_trigger_index = 0
+            # --- END NEW LOGIC ---
+
         self._wt_m_interface_bonds = 0
         self._find_initial_front()
         self.metrics_manager = kwargs.get("metrics_manager")
@@ -292,21 +299,35 @@ class GillespieSimulation:
             return True, False
         event_type, parent, target = self.idx_to_event[event_idx]
         self._execute_event(event_type, parent, target)
-        if (
-            self.plotter
-            and self.cycle_q_viz > 0
-            and self.mean_front_position >= self.next_snapshot_q
-        ):
-            cycle_num_float = self.next_snapshot_q / self.cycle_q_viz
-            title = f"Task {self.snapshot_dir.name[-12:]}\nCycle {cycle_num_float:.1f}, Time: {self.time:.1f}"
-            self.plotter.plot_population(
-                self.population, title=title, q_to_patch_index=self.q_to_patch_index
-            )
-            snapshot_path = (
-                self.snapshot_dir / f"snap_cycle_{cycle_num_float:04.1f}.png"
-            )
-            self.plotter.save_figure(snapshot_path)
-            self.next_snapshot_q += self.snapshot_interval_cycles * self.cycle_q_viz
+
+        # --- REPLACED DYNAMIC SNAPSHOT LOGIC ---
+        if self.plotter and self.snapshots_taken < self.max_snapshots:
+            if self.next_snapshot_trigger_index < len(self.snapshot_q_triggers):
+                next_trigger_q = self.snapshot_q_triggers[
+                    self.next_snapshot_trigger_index
+                ]
+                if self.mean_front_position >= next_trigger_q:
+                    # Take snapshot
+                    boundary_q = next_trigger_q + self.snapshot_q_offset
+                    title = (
+                        f"Task {self.snapshot_dir.name[-12:]}\n"
+                        f"Snapshot {self.snapshots_taken + 1}/{self.max_snapshots} (q ≈ {self.mean_front_position:.1f} approaching {boundary_q:.1f})"
+                    )
+                    self.plotter.plot_population(
+                        self.population,
+                        title=title,
+                        q_to_patch_index=self.q_to_patch_index,
+                    )
+                    snapshot_path = (
+                        self.snapshot_dir / f"snap_{self.snapshots_taken + 1:02d}.png"
+                    )
+                    self.plotter.save_figure(snapshot_path)
+
+                    # Update state
+                    self.snapshots_taken += 1
+                    self.next_snapshot_trigger_index += 1
+        # --- END REPLACED LOGIC ---
+
         boundary_hit = self.mean_front_position >= self.length - 2
         return True, boundary_hit
 

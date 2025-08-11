@@ -25,6 +25,7 @@ PARAM_GRID = {
     ).tolist(),  # Focus on polluting/unbiased
     # --- Switching Rate Grids (k_total) ---
     "k_total_final_log": np.round(np.logspace(-2, 1, 10), 4).tolist(),  # 0.01 to 10
+    "k_zero": [0],  # Special case for no switching
     # --- Geometric Grids ---
     "width_scan": [64, 128, 256, 512],
     "patch_width_scan": [30, 60, 120],
@@ -66,7 +67,7 @@ PARAM_GRID = {
     ],
     "bm_visualization": [0.8, 0.95],  # s = -0.2 and s = -0.05
     "k_total_visualization": [0.02, 0.5],  # A low and a high switching rate
-    "phi_visualization": [1.0],  # The key case to visualize
+    "phi_visualization": [0.0],  # Unbiased switching is better for demo
     "patch_width_visualization": [60],  # A representative patch width
 }
 
@@ -160,7 +161,7 @@ EXPERIMENTS = {
                     "convergence_threshold": 0.01,
                 },
                 "grid_params": {
-                    "b_m": "bm_final_narrow",
+                    "b_m": "bm_final_wide",
                     "phi": "phi_final_full",
                     "k_total": "k_total_final_log",
                     "patch_width": "patch_width_scan",
@@ -180,7 +181,7 @@ EXPERIMENTS = {
                     "convergence_threshold": 0.01,
                 },
                 "grid_params": {
-                    "b_m": "bm_final_narrow",
+                    "b_m": "bm_final_wide",
                     "patch_width": "patch_width_scan",
                     "initial_mutant_patch_size": "ic_control_scan",
                 },
@@ -227,7 +228,7 @@ EXPERIMENTS = {
                     "convergence_threshold": 0.01,
                 },
                 "grid_params": {
-                    "b_m": "bm_final_narrow",
+                    "b_m": "bm_final_wide",
                     "phi": "phi_final_asymmetric",
                     "k_total": "k_total_final_log",
                     "env_definition": "env_asymmetric_cycle_refined",
@@ -235,37 +236,33 @@ EXPERIMENTS = {
             }
         },
     },
-    "workflow_debug_2tasks": {
-        "campaign_id": "debug_workflow_2tasks",
-        "run_mode": "phase_diagram",
-        "hpc_params": {
-            "time": "00:10:00",
-            "mem": "1G",
-            "sims_per_task": 2,  # Two sims total, so one chunk
-        },
+    "visualization_test": {
+        "campaign_id": "viz_final_paper",
+        "run_mode": "visualization",
+        "hpc_params": {"time": "00:30:00", "mem": "4G", "sims_per_task": 1},
         "sim_sets": {
             "main": {
                 "base_params": {
-                    "width": 32,
-                    "length": 64,
-                    # --- CRITICAL CHANGE: 2 REPLICATES ---
-                    "num_replicates": 2,
-                    "b_m": 0.9,
-                    "k_total": 0.1,
-                    "phi": 0.0,
+                    "width": 128,
+                    "length": 1024,
+                    "num_replicates": 1,
+                    "max_snapshots": 5,
+                    "snapshot_q_offset": 2.0,
+                    "environment_map": "env_bet_hedging",
                     "initial_condition_type": "mixed",
-                    "warmup_time": 1.0,
-                    "num_samples": 1,
-                    "sample_interval": 1.0,
                 },
-                "grid_params": {},  # No parameter sweeps
-            }
+                "grid_params": {
+                    "b_m": "bm_visualization",
+                    "k_total": "k_total_visualization",
+                    "phi": "phi_visualization",
+                    "patch_width": "patch_width_visualization",
+                },
+            },
         },
     },
     "recovery_timescale": {
         "campaign_id": "fig4_recovery_timescale",
-        "run_mode": "recovery_dynamics",  # <-- Use the new purpose-built run mode
-        # Total sims: 10 (k) * 9 (phi) * 5 (s) * 60 (reps) = 27,000
+        "run_mode": "recovery_dynamics",
         "hpc_params": {"time": "05:00:00", "mem": "2G", "sims_per_task": 80},
         "sim_sets": {
             "main": {
@@ -273,13 +270,12 @@ EXPERIMENTS = {
                     "width": 256,
                     "length": 8192,
                     "initial_condition_type": "patch",
-                    "initial_mutant_patch_size": "width",  # Start at 100% Mutant
+                    "initial_mutant_patch_size": "width",
                     "num_replicates": 60,
-                    # --- Exhaustive Metric Parameters ---
-                    "total_run_time": 5000.0,  # Run long enough for full relaxation
-                    "timeseries_interval": 10.0,  # High-resolution timeseries
-                    "warmup_time_ss": 4000.0,  # Start steady-state sampling late
-                    "num_samples_ss": 100,  # Get good stats on the final state
+                    "total_run_time": 5000.0,
+                    "timeseries_interval": 10.0,
+                    "warmup_time_ss": 4000.0,
+                    "num_samples_ss": 100,
                     "sample_interval_ss": 10.0,
                 },
                 "grid_params": {
@@ -290,29 +286,28 @@ EXPERIMENTS = {
             }
         },
     },
-    # --- NEW EXPERIMENT FOR SUPPLEMENTARY FIGURE: HOMOGENEOUS COST ---
+    # --- UPDATED: HOMOGENEOUS FITNESS COST with CONVERGENCE ---
     "homogeneous_fitness_cost": {
         "campaign_id": "sup_homogeneous_cost",
-        "run_mode": "homogeneous_dynamics",  # <-- Use the new purpose-built run mode
-        # Total sims: 10 (k) * 9 (phi) * 5 (s) * 40 (reps) = 18,000
-        "hpc_params": {"time": "04:30:00", "mem": "2G", "sims_per_task": 50},
+        "run_mode": "homogeneous_converged",  # <-- Use the new purpose-built run mode
+        "hpc_params": {"time": "06:00:00", "mem": "2G", "sims_per_task": 50},
         "sim_sets": {
             "main": {
                 "base_params": {
                     "width": 256,
-                    "length": 8192,  # Long enough to avoid boundary effects
+                    "length": 8192,
                     "num_replicates": 40,
                     "initial_condition_type": "mixed",
-                    # --- Exhaustive Metric Parameters ---
-                    "total_run_time": 3000.0,
-                    "warmup_time": 1000.0,  # Very long warmup for precise measurement
-                    "num_samples": 200,  # High number of samples
-                    "sample_interval": 10.0,
+                    # --- NEW Convergence-based parameters ---
+                    "max_run_time": 8000.0,
+                    "convergence_check_interval": 100.0,  # Time units
+                    "convergence_window": 5,  # Number of intervals to check
+                    "convergence_threshold": 0.01,  # 1% relative stdev
                 },
                 "grid_params": {
                     "b_m": "bm_final_wide",
                     "phi": "phi_final_full",
-                    "k_total": "k_total_final_log",
+                    "k_total": "k_zero",
                 },
             }
         },

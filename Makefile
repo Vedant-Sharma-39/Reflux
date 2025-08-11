@@ -2,7 +2,7 @@
 #
 # A simple, clean wrapper around the main control script: manage.py
 
-.PHONY: help install launch clean plot figures fig1 fig2 fig3 fig4 debug
+.PHONY: help install launch clean consolidate plot figures fig1 fig2 fig3 fig4 debug
 .DEFAULT_GOAL := help
 
 # --- Configuration ---
@@ -26,6 +26,11 @@ launch:
 ## e.g., `make clean` (interactive) or `make clean EXP=phase_diagram`
 clean:
 	@$(MANAGER) clean $(EXP)
+
+## Consolidate a campaign's raw data.
+## e.g., `make consolidate` (interactive) or `make consolidate CAMPAIGN=fig2_phase_diagram`
+consolidate:
+	@$(MANAGER) consolidate $(CAMPAIGN)
 
 ## Generate a plot.
 ## e.g., `make plot` (interactive) or `make plot FIG=fig2`

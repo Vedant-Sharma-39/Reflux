@@ -37,7 +37,7 @@ def load_timeseries_data(campaign_id, project_root, task_ids_to_load):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate Figure 4: Relaxation Dynamics."
+        description="Generate Supplementary Figure: Relaxation Dynamics Time Series."
     )
     parser.add_argument("campaign_id")
     args = parser.parse_args()
@@ -49,32 +49,29 @@ def main():
         "analysis",
         f"{args.campaign_id}_summary_aggregated.csv",
     )
+    output_path = os.path.join(
+        project_root, "data", args.campaign_id, "analysis", "sup_fig_relaxation_ts.png"
+    )
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     try:
         df_summary = pd.read_csv(summary_path)
     except (FileNotFoundError, pd.errors.EmptyDataError):
         df_summary = pd.DataFrame()
 
-    output_dir = os.path.join(project_root, "data", args.campaign_id, "analysis")
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, "figure4_relaxation.png")
-
     if df_summary.empty:
         print(
-            f"Warning: No data found for campaign '{args.campaign_id}'. Cannot generate Figure 4."
+            f"Warning: No data for campaign '{args.campaign_id}'. Cannot generate figure."
         )
         fig, _ = plt.subplots()
-        fig.text(0.5, 0.5, "Figure 4: No Data Available", ha="center", va="center")
+        fig.text(0.5, 0.5, "Relaxation TS: No Data Available", ha="center", va="center")
         plt.savefig(output_path, dpi=300)
         sys.exit(0)
 
     df_summary["task_id"] = df_summary["task_id"].astype(str)
     df_summary["s"] = df_summary["b_m"] - 1.0
     s_values = np.sort(df_summary["s"].unique())
-    s_to_plot = s_values[int(len(s_values) * 0.25)] if len(s_values) > 0 else None
-
-    if s_to_plot is None:
-        sys.exit("Error: No unique 's' values found in the data.")
+    s_to_plot = s_values[int(len(s_values) * 0.25)] if len(s_values) > 0 else 0.0
 
     df_subset = df_summary[np.isclose(df_summary["s"], s_to_plot)]
     k_values = sorted(df_subset["k_total"].unique())
@@ -95,15 +92,13 @@ def main():
         all_dfs_for_k = [
             ts_data_map[tid]
             for tid in task_ids_for_k
-            if tid in ts_data_map
-            and ts_data_map[tid] is not None
-            and not ts_data_map[tid].empty
+            if tid in ts_data_map and not ts_data_map[tid].empty
         ]
         if not all_dfs_for_k:
             continue
-        combined_df = pd.concat(all_dfs_for_k)
         avg_df = (
-            combined_df.groupby("time")["mutant_fraction"]
+            pd.concat(all_dfs_for_k)
+            .groupby("time")["mutant_fraction"]
             .agg(["mean", "sem"])
             .reset_index()
         )
@@ -111,12 +106,11 @@ def main():
         plot_data.append(avg_df)
 
     if not plot_data:
-        print(
-            "Warning: No valid timeseries data could be processed for plotting.",
-            file=sys.stderr,
-        )
+        print("Warning: No valid timeseries data could be processed.", file=sys.stderr)
         fig, _ = plt.subplots()
-        fig.text(0.5, 0.5, "Figure 4: No Timeseries Data", ha="center", va="center")
+        fig.text(
+            0.5, 0.5, "Relaxation TS: No Timeseries Data", ha="center", va="center"
+        )
         plt.savefig(output_path, dpi=300)
         sys.exit(0)
 
@@ -140,7 +134,7 @@ def main():
     plt.legend(title=r"$k_{total}$", loc="best")
     plt.ylim(-0.05, 1.05)
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"\nFigure 4 saved to {output_path}")
+    print(f"\nRelaxation TS Figure saved to {output_path}")
 
 
 if __name__ == "__main__":
