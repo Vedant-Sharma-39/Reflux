@@ -1,9 +1,9 @@
-# FILE: src/core/metrics.py
-# A collection of modular metric trackers. [v11 - Terminology Aligned with Literature]
+# FILE: src/core/metrics.py (Corrected and Renamed)
 
 import numpy as np
 import pandas as pd
 from typing import List, Tuple, Dict, Any, Type, TYPE_CHECKING
+from collections import deque
 
 if TYPE_CHECKING:
     from src.core.model import GillespieSimulation
@@ -26,8 +26,14 @@ class MetricTracker:
         return {}
 
 
-class SectorWidthTracker(MetricTracker):
-    # ... (class is unchanged)
+# --- RENAMED CLASS and UPDATED DOCSTRING ---
+class BoundaryDynamicsTracker(MetricTracker):
+    """
+    For 'boundary_analysis' (calibration) runs. Tracks the boundary between
+    two competing populations, recording the width of the mutant sector
+    and the time until either extinction or fixation.
+    """
+
     def __init__(self, sim: "GillespieSimulation", **kwargs):
         super().__init__(sim, **kwargs)
         self.trajectory: List[Tuple[float, float]] = []
@@ -58,7 +64,60 @@ class SectorWidthTracker(MetricTracker):
         return final_data
 
 
+class RelaxationConvergenceTracker(MetricTracker):
+    """
+    For 'relaxation_converged' runs. Records a high-resolution time series
+    and stops the simulation once the mutant fraction has converged to a
+    steady state.
+    """
+
+    def __init__(
+        self,
+        sim: "GillespieSimulation",
+        sample_interval: float,
+        convergence_window: int,
+        convergence_threshold: float,
+        **kwargs,
+    ):
+        super().__init__(sim=sim, **kwargs)
+        self.sample_interval = sample_interval
+        self.next_log_time = 0.0
+        self.history: List[Dict] = []
+
+        # For convergence checking
+        self.convergence_window = convergence_window
+        self.convergence_threshold = convergence_threshold
+        self.rho_m_deque = deque(maxlen=convergence_window)
+        self._is_done = False
+
+    def is_done(self) -> bool:
+        return self._is_done
+
+    def after_step_hook(self):
+        while self.sim.time >= self.next_log_time:
+            current_rho_m = self.sim.mutant_fraction
+            self.history.append(
+                {
+                    "time": self.next_log_time,
+                    "mutant_fraction": current_rho_m,
+                }
+            )
+            self.rho_m_deque.append(current_rho_m)
+            self.next_log_time += self.sample_interval
+
+            # Check for convergence only after the deque is full
+            if len(self.rho_m_deque) == self.convergence_window:
+                # Stop if standard deviation is below threshold (i.e., it's flat)
+                if np.std(self.rho_m_deque) < self.convergence_threshold:
+                    self._is_done = True
+                    break
+
+    def finalize(self) -> Dict[str, Any]:
+        return {"timeseries": self.history}
+
+
 class InterfaceRoughnessTracker(MetricTracker):
+    # ... (rest of the file is unchanged) ...
     """For 'diffusion' runs. Measures W², the squared roughness of the front."""
 
     def __init__(
@@ -205,30 +264,33 @@ class FrontDynamicsTracker(MetricTracker):
     def finalize(self) -> Dict[str, Any]:
         return {"front_dynamics": self.history}
 
+
 class RecoveryDynamicsTracker(MetricTracker):
     """
     Exhaustive tracker for recovery/relaxation experiments.
     - Logs a detailed timeseries of the relaxation process.
     - After relaxation, samples steady-state properties of the new equilibrium.
     """
+
     def __init__(
-        self, sim: "GillespieSimulation",
+        self,
+        sim: "GillespieSimulation",
         timeseries_interval: float,
-        warmup_time_ss: float, # SS = Steady State
+        warmup_time_ss: float,  # SS = Steady State
         num_samples_ss: int,
         sample_interval_ss: float,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(sim=sim, **kwargs)
         self.timeseries_interval = timeseries_interval
         self.warmup_time_ss = warmup_time_ss
         self.num_samples_ss = num_samples_ss
         self.sample_interval_ss = sample_interval_ss
-        
+
         # For timeseries part
         self.next_log_time = 0.0
         self.timeseries_history = []
-        
+
         # For steady-state part
         self.is_warmed_up = False
         self.next_sample_time_ss = 0.0
@@ -241,10 +303,12 @@ class RecoveryDynamicsTracker(MetricTracker):
     def after_step_hook(self):
         # --- Part 1: Log the timeseries continuously ---
         while self.sim.time >= self.next_log_time:
-            self.timeseries_history.append({
-                "time": self.next_log_time,
-                "mutant_fraction": self.sim.mutant_fraction,
-            })
+            self.timeseries_history.append(
+                {
+                    "time": self.next_log_time,
+                    "mutant_fraction": self.sim.mutant_fraction,
+                }
+            )
             self.next_log_time += self.timeseries_interval
 
         # --- Part 2: Sample for steady-state properties after warmup ---
@@ -254,14 +318,20 @@ class RecoveryDynamicsTracker(MetricTracker):
             self.last_sample_time_ss = self.sim.time
             self.next_sample_time_ss = self.sim.time + self.sample_interval_ss
 
-        if self.is_warmed_up and self.sim.time >= self.next_sample_time_ss and self.samples_taken_ss < self.num_samples_ss:
+        if (
+            self.is_warmed_up
+            and self.sim.time >= self.next_sample_time_ss
+            and self.samples_taken_ss < self.num_samples_ss
+        ):
             current_q = self.sim.mean_front_position
             current_time = self.sim.time
             delta_q = current_q - self.last_sample_q_ss
             delta_t = current_time - self.last_sample_time_ss
-            
+
             self.mutant_fraction_samples_ss.append(self.sim.mutant_fraction)
-            self.front_speed_samples_ss.append(delta_q / delta_t if delta_t > 1e-9 else 0.0)
+            self.front_speed_samples_ss.append(
+                delta_q / delta_t if delta_t > 1e-9 else 0.0
+            )
 
             self.last_sample_q_ss = current_q
             self.last_sample_time_ss = current_time
@@ -271,29 +341,50 @@ class RecoveryDynamicsTracker(MetricTracker):
     def finalize(self) -> Dict[str, Any]:
         return {
             "timeseries": self.timeseries_history,
-            "avg_rho_M_final": np.mean(self.mutant_fraction_samples_ss) if self.mutant_fraction_samples_ss else np.nan,
-            "var_rho_M_final": np.var(self.mutant_fraction_samples_ss, ddof=1) if len(self.mutant_fraction_samples_ss) > 1 else np.nan,
-            "avg_front_speed_final": np.mean(self.front_speed_samples_ss) if self.front_speed_samples_ss else np.nan,
+            "avg_rho_M_final": (
+                np.mean(self.mutant_fraction_samples_ss)
+                if self.mutant_fraction_samples_ss
+                else np.nan
+            ),
+            "var_rho_M_final": (
+                np.var(self.mutant_fraction_samples_ss, ddof=1)
+                if len(self.mutant_fraction_samples_ss) > 1
+                else np.nan
+            ),
+            "avg_front_speed_final": (
+                np.mean(self.front_speed_samples_ss)
+                if self.front_speed_samples_ss
+                else np.nan
+            ),
         }
+
 
 class HomogeneousDynamicsTracker(MetricTracker):
     """
     Enhanced version of SteadyStatePropertiesTracker for precise measurements
     in homogeneous environments. Adds front speed calculation.
     """
-    def __init__(self, sim: "GillespieSimulation", warmup_time: float, num_samples: int, sample_interval: float, **kwargs):
+
+    def __init__(
+        self,
+        sim: "GillespieSimulation",
+        warmup_time: float,
+        num_samples: int,
+        sample_interval: float,
+        **kwargs,
+    ):
         super().__init__(sim=sim, **kwargs)
         self.warmup_time = warmup_time
         self.num_samples = num_samples
         self.sample_interval = sample_interval
-        
+
         self.is_warmed_up = False
         self.next_sample_time = 0.0
         self.samples_taken = 0
-        
+
         self.mutant_fraction_samples = []
         self.front_speed_samples = []
-        
+
         self.last_sample_q = 0.0
         self.last_sample_time = 0.0
 
@@ -307,14 +398,20 @@ class HomogeneousDynamicsTracker(MetricTracker):
             self.last_sample_time = self.sim.time
             self.next_sample_time = self.sim.time + self.sample_interval
 
-        if self.is_warmed_up and self.sim.time >= self.next_sample_time and not self.is_done():
+        if (
+            self.is_warmed_up
+            and self.sim.time >= self.next_sample_time
+            and not self.is_done()
+        ):
             current_q = self.sim.mean_front_position
             current_time = self.sim.time
             delta_q = current_q - self.last_sample_q
             delta_t = current_time - self.last_sample_time
-            
+
             self.mutant_fraction_samples.append(self.sim.mutant_fraction)
-            self.front_speed_samples.append(delta_q / delta_t if delta_t > 1e-9 else 0.0)
+            self.front_speed_samples.append(
+                delta_q / delta_t if delta_t > 1e-9 else 0.0
+            )
 
             self.last_sample_q = current_q
             self.last_sample_time = current_time
@@ -323,11 +420,100 @@ class HomogeneousDynamicsTracker(MetricTracker):
 
     def finalize(self) -> Dict[str, Any]:
         return {
-            "avg_rho_M": np.mean(self.mutant_fraction_samples) if self.mutant_fraction_samples else np.nan,
-            "var_rho_M": np.var(self.mutant_fraction_samples, ddof=1) if len(self.mutant_fraction_samples) > 1 else np.nan,
-            "avg_front_speed": np.mean(self.front_speed_samples) if self.front_speed_samples else np.nan,
+            "avg_rho_M": (
+                np.mean(self.mutant_fraction_samples)
+                if self.mutant_fraction_samples
+                else np.nan
+            ),
+            "var_rho_M": (
+                np.var(self.mutant_fraction_samples, ddof=1)
+                if len(self.mutant_fraction_samples) > 1
+                else np.nan
+            ),
+            "avg_front_speed": (
+                np.mean(self.front_speed_samples)
+                if self.front_speed_samples
+                else np.nan
+            ),
         }
 
+
+class CyclicTimeSeriesTracker(MetricTracker):
+    """
+    For 'tracking_analysis' runs. Warms up the simulation for a number of
+    environmental cycles and then records a high-resolution time series
+    of the population dynamics over subsequent measurement cycles.
+    """
+
+    def __init__(
+        self,
+        sim: "GillespieSimulation",
+        warmup_cycles: int,
+        measure_cycles: int,
+        sample_interval: float,
+        **kwargs,
+    ):
+        super().__init__(sim=sim, **kwargs)
+        self.warmup_cycles = warmup_cycles
+        self.measure_cycles = measure_cycles
+        self.sample_interval = sample_interval
+
+        # Calculate environmental cycle length in q-space
+        self.cycle_q = self.sim.patch_sequence[0][1] * len(
+            set(p[0] for p in self.sim.patch_sequence)
+        )
+        if self.cycle_q <= 0:
+            raise ValueError(
+                "CyclicTimeSeriesTracker requires a defined positive cycle length."
+            )
+
+        self.state = "warming_up"  # States: warming_up, measuring, done
+        self.cycles_completed = 0
+        self.total_cycles = warmup_cycles + measure_cycles
+
+        self.history: List[Dict] = []
+        self.next_log_time = -1.0
+        self.measurement_start_time = -1.0
+
+    def is_done(self) -> bool:
+        return self.state == "done"
+
+    def after_step_hook(self):
+        if self.is_done():
+            return
+
+        # --- State: WARMING UP ---
+        if self.state == "warming_up":
+            target_q = (self.cycles_completed + 1) * self.cycle_q
+            if self.sim.mean_front_position >= target_q:
+                self.cycles_completed += 1
+                if self.cycles_completed >= self.warmup_cycles:
+                    self.state = "measuring"
+                    self.measurement_start_time = self.sim.time
+                    self.next_log_time = self.sim.time
+
+        # --- State: MEASURING ---
+        if self.state == "measuring":
+            # Record high-resolution data points
+            while self.sim.time >= self.next_log_time:
+                self.history.append(
+                    {
+                        "time": self.next_log_time - self.measurement_start_time,
+                        "mutant_fraction": self.sim.mutant_fraction,
+                    }
+                )
+                self.next_log_time += self.sample_interval
+
+            # Check if the current measurement cycle is complete
+            target_q = (self.cycles_completed + 1) * self.cycle_q
+            if self.sim.mean_front_position >= target_q:
+                self.cycles_completed += 1
+                if self.cycles_completed >= self.total_cycles:
+                    self.state = "done"
+
+    def finalize(self) -> Dict[str, Any]:
+        # The main output is the bulky timeseries data
+        return {"timeseries": self.history}
 
 
 class MetricsManager:

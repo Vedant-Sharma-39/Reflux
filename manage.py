@@ -48,9 +48,13 @@ FIG_MAP = {
         "scripts/paper_figures/fig4_recovery_analysis.py",
         ["fig4_recovery_timescale"],
     ),
-    # --- Supplementary Figures ---
+    # --- Supplementary & Exploratory Figures ---
     "sup_fig_phase_diagram": (
         "scripts/paper_figures/sup_fig_phase_diagram.py",
+        ["fig2_phase_diagram"],
+    ),
+    "sup_fig_susceptibility": (
+        "scripts/paper_figures/sup_fig_susceptibility_analysis.py",
         ["fig2_phase_diagram"],
     ),
     "sup_fig_homogeneous_cost": (
@@ -65,11 +69,16 @@ FIG_MAP = {
         "scripts/paper_figures/sup_fig_relaxation_ts.py",
         ["fig4_relaxation"],
     ),
+    "sup_fig_relaxation_analysis": (
+        "scripts/paper_figures/sup_fig_relaxation_analysis.py",
+        ["fig4_recovery_timescale"],
+    ),
     "sup_fig_optimal_heatmap": (
         "scripts/paper_figures/sup_fig_optimal_strategy_heatmap.py",
         ["fig3_bet_hedging_final"],
     ),
 }
+
 
 VALID_FIG_NAMES = list(FIG_MAP.keys())
 

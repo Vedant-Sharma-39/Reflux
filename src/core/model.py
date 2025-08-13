@@ -220,10 +220,6 @@ class GillespieSimulation:
     def domain_boundary_length(self) -> float:
         return self._wt_m_interface_bonds / 2.0
 
-    @property
-    def mutant_sector_width(self) -> float:
-        return float(len(self.m_front_cells))
-
     def _update_events_for_cell(self, h: Hex):
         cell_type = self.population.get(h)
         if h in self._front_lookup:

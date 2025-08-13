@@ -1,116 +1,182 @@
 # FILE: scripts/paper_figures/fig3_adaptation_analysis.py
+# Generates the definitive Figure 3, with a simplified and powerful Panel D
+# directly comparing the optimal reversible strategy to the irreversible baseline.
 
-import argparse
 import os
 import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import json
 
 
 def get_project_root():
+    """Dynamically finds the project root directory."""
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-def extract_env_name(env_def_json):
-    try:
-        env_def = json.loads(env_def_json)
-        return env_def.get("name", "unknown")
-    except (json.JSONDecodeError, TypeError):
-        return "unknown"
+def find_nearest(array, value):
+    """Finds the nearest value in a sorted array."""
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return array[idx]
+
+
+def plot_strategy_panel(ax, df_s_slice, title):
+    """Helper function to plot a single fitness-vs-k panel for a fixed s."""
+    sns.lineplot(
+        data=df_s_slice,
+        x="k_total",
+        y="avg_front_speed",
+        hue="phi",
+        palette="coolwarm_r",
+        legend="full",
+        marker="o",
+        lw=3,
+        ms=8,
+        ax=ax,
+    )
+    ax.set_xscale("log")
+    ax.set_title(title, fontsize=20)
+    ax.set_xlabel("Switching Rate, $k$", fontsize=16)
+    ax.set_ylabel("Long-Term Fitness", fontsize=16)
+    ax.grid(True, which="both", ls=":")
+    if ax.get_legend() is not None:
+        ax.get_legend().set_title(r"Bias, $\phi$")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate Figure 3: Adaptation to Environmental Asymmetry."
-    )
-    parser.add_argument("asymmetric_campaign")
-    parser.add_argument("symmetric_campaign")
-    args = parser.parse_args()
     project_root = get_project_root()
-
-    path_asym = os.path.join(
-        project_root,
-        "data",
-        args.asymmetric_campaign,
-        "analysis",
-        f"{args.asymmetric_campaign}_summary_aggregated.csv",
-    )
-    path_sym = os.path.join(
-        project_root,
-        "data",
-        args.symmetric_campaign,
-        "analysis",
-        f"{args.symmetric_campaign}_summary_aggregated.csv",
-    )
-    output_path = os.path.join(
-        project_root,
-        "data",
-        args.asymmetric_campaign,
-        "analysis",
-        "figure3_adaptation_plot.png",
-    )
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    from src.config import EXPERIMENTS
 
     try:
-        df_asym = pd.read_csv(path_asym)
-        df_sym = pd.read_csv(path_sym)
-    except FileNotFoundError as e:
-        print(f"Error: Missing a required data file. {e}", file=sys.stderr)
+        campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
+    except KeyError:
+        print(
+            "Error: 'bet_hedging_final' experiment not found in src/config.py.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    df_asym["env_name"] = df_asym["env_definition"].apply(extract_env_name)
-    df_sym_60 = df_sym[df_sym["patch_width"] == 60].copy()
-    df_sym_60["env_name"] = "60_60"
+    summary_path = os.path.join(
+        project_root,
+        "data",
+        campaign_id,
+        "analysis",
+        f"{campaign_id}_summary_aggregated.csv",
+    )
+    figure_dir = os.path.join(project_root, "figures")
+    os.makedirs(figure_dir, exist_ok=True)
+    output_path = os.path.join(figure_dir, "fig3_adaptation_analysis.png")
 
-    df = pd.concat([df_asym, df_sym_60], ignore_index=True)
+    print(f"Generating definitive Figure 3 from campaign: {campaign_id}")
+    df = pd.read_csv(summary_path)
 
-    s_slice = -0.25
-    df_slice = df[np.isclose(df["b_m"] - 1.0, s_slice)]
+    # --- Definitive Two-Step Filtering Protocol ---
+    STALL_THRESHOLD = 0.20
+    stall_counts = df[df["termination_reason"] == "stalled_or_boundary_hit"][
+        "phi"
+    ].value_counts()
+    total_counts = df["phi"].value_counts()
+    stall_rates = stall_counts.div(total_counts, fill_value=0)
+    phi_to_exclude = stall_rates[stall_rates > STALL_THRESHOLD].index.tolist()
+    if phi_to_exclude:
+        df_for_analysis = df[~df["phi"].isin(phi_to_exclude)].copy()
+    else:
+        df_for_analysis = df.copy()
+    df_filtered = df_for_analysis[
+        df_for_analysis["termination_reason"] != "stalled_or_boundary_hit"
+    ].copy()
+    df_filtered["s"] = df_filtered["b_m"] - 1.0
 
-    opt_idx = df_slice.groupby("env_name")["avg_front_speed"].idxmax()
-    df_opt = df_slice.loc[opt_idx].set_index("env_name")
-
-    norm_speed = df_opt.loc["60_60"]["avg_front_speed"]
-    df_opt["fitness_gain"] = df_opt["avg_front_speed"] / norm_speed
-    df_opt = df_opt.reindex(["90_30", "60_60", "30_90", "scrambled_60_60"])
+    df_plot_data = df_filtered[
+        (df_filtered["patch_width"] == 60) & (df_filtered["k_total"] > 0)
+    ].copy()
 
     sns.set_theme(style="ticks", context="talk")
-    fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+    fig, axes = plt.subplots(2, 2, figsize=(18, 16), constrained_layout=True)
     fig.suptitle(
-        f"Optimal Strategy Adapts to Environmental Asymmetry (s = {s_slice})",
-        fontsize=22,
-        y=1.02,
+        "The Fitness Landscape is Rugged and Tuned by Selection", fontsize=28, y=1.03
     )
 
-    axA = axes[0]
-    sns.barplot(
-        ax=axA, x=df_opt.index, y=df_opt["phi"], palette="coolwarm_r", edgecolor="black"
-    )
-    axA.axhline(0, color="black", ls="--", lw=1)
-    axA.set_title("(a) Optimal Switching Bias", fontsize=16)
-    axA.set_xlabel("Environment (WT Favored / M Favored Patch Width)")
-    axA.set_ylabel(r"Optimal Bias, $\phi_{opt}$")
+    s_all = np.sort(df_plot_data["s"].unique())
+    s_targets = [-0.1, -0.5, -0.8]
+    s_vals = [find_nearest(s_all, s) for s in s_targets]
 
-    axB = axes[1]
-    sns.barplot(
-        ax=axB,
-        x=df_opt.index,
-        y=df_opt["fitness_gain"],
-        palette="crest",
-        edgecolor="black",
+    panel_map = {
+        s_vals[0]: (axes[0, 0], f"(A) Weak Selection (s = {s_vals[0]:.2f})"),
+        s_vals[1]: (axes[0, 1], f"(B) Medium Selection (s = {s_vals[1]:.2f})"),
+        s_vals[2]: (axes[1, 0], f"(C) Strong Selection (s = {s_vals[2]:.2f})"),
+    }
+
+    for s_val, (ax, title) in panel_map.items():
+        df_panel = df_plot_data[np.isclose(df_plot_data["s"], s_val)]
+        if not df_panel.empty:
+            plot_strategy_panel(ax, df_panel, title)
+
+    # --- Simplified Panel D: Optimal Reversible vs. Irreversible Baseline ---
+    ax_d = axes[1, 1]
+
+    # 1. Get the irreversible baseline (using the original full dataframe)
+    phi_irr_val = find_nearest(df["phi"].unique(), -1.0)
+    # --- FIX: Create an explicit copy to avoid SettingWithCopyWarning ---
+    df_baseline_runs = df[
+        (np.isclose(df["phi"], phi_irr_val))
+        & (df["termination_reason"] != "stalled_or_boundary_hit")
+    ].copy()
+    df_baseline_runs["s"] = df_baseline_runs["b_m"] - 1.0
+    df_baseline_fitness = (
+        df_baseline_runs.groupby("s")["avg_front_speed"].mean().reset_index()
     )
-    axB.axhline(1.0, color="black", ls="--", lw=1)
-    axB.set_title("(b) Maximal Fitness Gain", fontsize=16)
-    axB.set_xlabel("Environment (WT Favored / M Favored Patch Width)")
-    axB.set_ylabel("Max Fitness / Symmetric Fitness")
+
+    # 2. Get the "Pareto frontier" - the best possible performance at each 's' from reversible strategies
+    df_mean_rev = (
+        df_plot_data.groupby(["s", "phi"])["avg_front_speed"].max().reset_index()
+    )
+    df_pareto = df_mean_rev.groupby("s")["avg_front_speed"].max().reset_index()
+
+    # Plotting Panel D
+    ax_d.plot(
+        df_baseline_fitness["s"],
+        df_baseline_fitness["avg_front_speed"],
+        label="Irreversible Strategy ($\\phi=-1.0$)",
+        color="crimson",
+        marker="s",
+        lw=3.5,
+        ls="--",
+    )
+
+    ax_d.plot(
+        df_pareto["s"],
+        df_pareto["avg_front_speed"],
+        label="Optimal Reversible Strategy",
+        color="royalblue",
+        marker="o",
+        lw=4,
+        ms=10,
+    )
+
+    # Shade the area between the curves to represent the "Advantage of Reversibility"
+    ax_d.fill_between(
+        df_pareto["s"],
+        df_pareto["avg_front_speed"],
+        df_baseline_fitness.set_index("s").reindex(df_pareto["s"])["avg_front_speed"],
+        color="gold",
+        alpha=0.3,
+        label="Advantage of Reversibility",
+    )
+
+    ax_d.set_title("(D) Optimal Strategy Performance", fontsize=20)
+    ax_d.set_xlabel("Selection Strength, $s$", fontsize=16)
+    ax_d.set_ylabel("Long-Term Fitness (Front Speed)", fontsize=16)
+    ax_d.grid(True, which="both", ls=":")
+    ax_d.legend(fontsize=14)
 
     sns.despine(fig)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.savefig(output_path, dpi=300)
-    print(f"\nAdaptation Figure 3 saved to {output_path}")
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    print(f"\nDefinitive Figure 3 saved to: {output_path}")
 
 
 if __name__ == "__main__":

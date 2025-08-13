@@ -1,4 +1,4 @@
-# FILE: src/worker.py (Corrected avg_rho_M Calculation)
+# FILE: src/worker.py (Definitive Final Version with Renaming)
 
 import argparse
 import gzip
@@ -23,20 +23,25 @@ if project_root not in sys.path:
 from src.core.model import GillespieSimulation
 from src.core.metrics import (
     MetricsManager,
-    SectorWidthTracker,
+    BoundaryDynamicsTracker,  # <-- CORRECTED IMPORT
     InterfaceRoughnessTracker,
     SteadyStatePropertiesTracker,
     TimeSeriesTracker,
     FrontDynamicsTracker,
     RecoveryDynamicsTracker,
     HomogeneousDynamicsTracker,
+    CyclicTimeSeriesTracker,
+    RelaxationConvergenceTracker,
 )
 
 RUN_MODE_CONFIG = {
-    "calibration": {"tracker_class": SectorWidthTracker, "tracker_params": {}},
+    "calibration": {
+        "tracker_class": BoundaryDynamicsTracker,
+        "tracker_params": {},
+    },  # <-- CORRECTED USAGE
     "diffusion": {
         "tracker_class": InterfaceRoughnessTracker,
-        "tracker_params": {"capture_interval": 0.5},
+        "tracker_params": {"capture_interval": "capture_interval"},
     },
     "phase_diagram": {
         "tracker_class": SteadyStatePropertiesTracker,
@@ -79,12 +84,29 @@ RUN_MODE_CONFIG = {
         "tracker_class": None,
         "tracker_params": {},
     },
-    # --- NEW RUN MODE ---
     "homogeneous_converged": {
         "tracker_class": None,
         "tracker_params": {},
     },
+    "cyclic_timeseries": {
+        "tracker_class": CyclicTimeSeriesTracker,
+        "tracker_params": {
+            "warmup_cycles": "warmup_cycles",
+            "measure_cycles": "measure_cycles",
+            "sample_interval": "sample_interval",
+        },
+    },
+    
+        "relaxation_converged": {
+        "tracker_class": RelaxationConvergenceTracker,
+        "tracker_params": {
+            "sample_interval": "sample_interval",
+            "convergence_window": "convergence_window",
+            "convergence_threshold": "convergence_threshold",
+        },
+    },
 }
+
 
 BULKY_DATA_KEYS = [
     "timeseries",
@@ -113,7 +135,6 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
                 break
         return {"status": "completed", "task_id": params.get("task_id")}
 
-    # --- NEW RUN MODE IMPLEMENTATION ---
     if run_mode == "homogeneous_converged":
         sim = GillespieSimulation(**params)
         max_run_time = params.get("max_run_time", 8000.0)
@@ -159,7 +180,6 @@ def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
         }
         final_output = {**params, **results, "termination_reason": termination_reason}
         return final_output
-    # --- END NEW IMPLEMENTATION ---
 
     if run_mode == "bet_hedging_converged":
         sim = GillespieSimulation(**params)
