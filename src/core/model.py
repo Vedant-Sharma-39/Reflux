@@ -1,17 +1,18 @@
-# FILE: src/core/model.py (This is the definitive, fully-corrected version)
-
 import numpy as np
 import random
 from typing import Dict, Set, Tuple, List, Optional
+from pathlib import Path
 
+# These imports are all necessary
 from src.core.hex_utils import Hex, HexPlotter
 from src.core.metrics import MetricsManager
-from pathlib import Path
+from src.config import PARAM_GRID
 
 Empty, Wildtype, Mutant = 0, 1, 2
 
 
 class SummedRateTree:
+    # This class is correct, with the safety check restored.
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.tree = np.zeros(2 * capacity)
@@ -23,6 +24,7 @@ class SummedRateTree:
             index //= 2
 
     def update(self, index: int, rate: float):
+        # FIX: The index boundary check is a valuable safety feature. It has been restored.
         if not (0 <= index < self.capacity):
             raise IndexError("Index out of bounds.")
         leaf_index = index + self.capacity
@@ -48,121 +50,162 @@ class SummedRateTree:
 
 
 class GillespieSimulation:
-    def __init__(
-        self, width: int, length: int, b_m: float, k_total: float, phi: float, **kwargs
-    ):
+    def __init__(self, **params):
+        self.all_params = params
+        # FIX: Restore the metrics_manager attribute. It is assigned externally by the MetricsManager.
+        self.metrics_manager: Optional[MetricsManager] = None
+
+        width = params.get("width", 256)
+        length = params.get("length", 4096)
+        b_m = params.get("b_m", 1.0)
+        k_total = params.get("k_total", 0.0)
+        phi = params.get("phi", 0.0)
         self.width, self.length = width, length
         self.global_b_m, self.global_k_total, self.global_phi = b_m, k_total, phi
         self.time, self.step_count = 0.0, 0
-        MAX_EVENTS = width * length * 7
-        self.tree = SummedRateTree(MAX_EVENTS)
+
+        self.MAX_EVENTS = width * length * 7
+        self.tree = SummedRateTree(self.MAX_EVENTS)
         self.event_to_idx: Dict[Tuple, int] = {}
         self.idx_to_event: Dict[int, Tuple] = {}
-        self.free_indices = list(range(MAX_EVENTS - 1, -1, -1))
+
+        # --- THE PERFORMANCE FIX: Use a dynamic index pool for instant startup ---
+        self.free_indices = []
+        self.next_event_idx = 0
+        # ---
+
         self.mutant_cell_count, self.total_cell_count = 0, 0
-        ic_type = kwargs.get("initial_condition_type", "mixed")
-        ic_patch_size = kwargs.get("initial_mutant_patch_size", 0)
+        ic_type = params.get("initial_condition_type", "mixed")
+        ic_patch_size = params.get("initial_mutant_patch_size", 0)
         self.is_radial_growth = ic_type == "single_cell"
         self.population: Dict[Hex, int] = self._initialize_population_pointytop(
             ic_type, ic_patch_size
         )
+
         self.wt_front_cells: Dict[Hex, List[Hex]] = {}
         self.m_front_cells: Dict[Hex, List[Hex]] = {}
         self._front_lookup: Set[Hex] = set()
-        self._precompute_env_params(**kwargs)
-        self.plotter: Optional[HexPlotter] = None
-        if kwargs.get("run_mode") == "visualization":
-            self.plotter = HexPlotter(
-                hex_size=1.0, labels={}, colormap={1: "#0c2c5c", 2: "#d6a000"}
-            )
-            self.snapshot_dir = Path(kwargs.get("output_dir_viz", ".")) / kwargs.get(
-                "task_id", "viz_task"
-            )
-            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-            # --- NEW DYNAMIC SNAPSHOT LOGIC ---
-            self.max_snapshots = kwargs.get("max_snapshots", 5)
-            self.snapshot_q_offset = kwargs.get("snapshot_q_offset", 2.0)
-            self.snapshots_taken = 0
-
-            boundary_indices = np.where(np.diff(self.q_to_patch_index) != 0)[0]
-            # The boundary is at q_idx + 0.5. The trigger is offset units before that.
-            self.snapshot_q_triggers = [
-                (q_idx + 0.5) - self.snapshot_q_offset for q_idx in boundary_indices
-            ]
-            self.next_snapshot_trigger_index = 0
-            # --- END NEW LOGIC ---
-
+        # This property is used by a metric tracker, so it must be initialized.
         self._wt_m_interface_bonds = 0
+
+        self._precompute_env_params(**params)
+        self._setup_visualization(**params)
         self._find_initial_front()
-        self.metrics_manager = kwargs.get("metrics_manager")
-        if self.metrics_manager:
-            self.metrics_manager.register_simulation(self)
-            self.metrics_manager.initialize_all()
+
+    # In class GillespieSimulation:
+
+    # In class GillespieSimulation:
 
     def _precompute_env_params(self, **kwargs):
-        env_def = kwargs.get("env_definition")
         self.k_wt_m, self.k_m_wt = self._calculate_asymmetric_rates(
             self.global_k_total, self.global_phi
         )
+        env_def = kwargs.get("env_definition")
+        env_map = kwargs.get("environment_map", {})
+
+        if isinstance(env_def, str):
+            env_def = PARAM_GRID.get("env_definitions", {}).get(env_def)
+
+        if isinstance(env_map, str):
+            env_map = PARAM_GRID.get(env_map)
+
         if env_def and isinstance(env_def, dict):
-            patch_param_list = [
-                [
-                    p.get("params", {}).get("b_wt", 1.0),
-                    p.get("params", {}).get("b_m", self.global_b_m),
-                ]
-                for p in sorted(env_def.get("patches", []), key=lambda p: p["id"])
-            ]
-            self.patch_params = np.array(patch_param_list)
+            if not env_map and "patches" in env_def:
+                env_map = {
+                    str(p["id"]): p.get("params", {})
+                    for p in env_def.get("patches", [])
+                }
+
             if env_def.get("scrambled"):
+                # Scrambled logic already has a loop that fills the length.
                 avg_width = env_def.get("avg_patch_width", 50)
-                patch_types = [
-                    p["id"]
-                    for p in sorted(env_def.get("patches", []), key=lambda p: p["id"])
-                ]
+                patches = env_def.get("patches", [])
+                patch_types = [p["id"] for p in sorted(patches, key=lambda p: p["id"])]
                 proportions = [
-                    p["proportion"]
-                    for p in sorted(env_def.get("patches", []), key=lambda p: p["id"])
+                    p["proportion"] for p in sorted(patches, key=lambda p: p["id"])
                 ]
                 self.patch_sequence = []
                 total_len = 0
                 while total_len < self.length:
                     width = int(np.random.exponential(scale=avg_width))
-                    if width == 0:
-                        continue
-                    self.patch_sequence.append(
-                        (np.random.choice(patch_types, p=proportions), width)
-                    )
-                    total_len += width
+                    if width > 0:
+                        self.patch_sequence.append(
+                            (np.random.choice(patch_types, p=proportions), width)
+                        )
+                        total_len += width
             else:
-                self.patch_sequence = [
+                # --- THIS IS THE FIX FOR REPEATING PATCHES ---
+                base_pattern = [
                     (p["id"], p["width"]) for p in env_def.get("patches", [])
                 ]
+                if not base_pattern:
+                    self.patch_sequence = []
+                else:
+                    cycle_q_width = sum(width for _, width in base_pattern)
+                    if cycle_q_width <= 0:
+                        self.patch_sequence = base_pattern  # Use once if no width
+                    else:
+                        self.patch_sequence = []
+                        total_len = 0
+                        while total_len < self.length:
+                            self.patch_sequence.extend(base_pattern)
+                            total_len += cycle_q_width
+                # --- END OF FIX ---
         else:
-            env_map = kwargs.get("environment_map", {})
+            # Fallback for older environment definitions
             patch_width = kwargs.get("patch_width", 0)
             if patch_width > 0 and env_map:
-                # --- FIX: Generate the full, explicit patch sequence ---
-                num_patches = (
-                    self.length + patch_width - 1
-                ) // patch_width  # Ceiling division
+                num_patches = (self.length + patch_width - 1) // patch_width
                 self.patch_sequence = [
                     (i % len(env_map), patch_width) for i in range(num_patches)
                 ]
-                # --- END FIX ---
             else:
                 self.patch_sequence = [(0, self.length)]
 
-            self.patch_params = np.array(
+        if not env_map:
+            env_map = {
+                "0": {"b_wt": self.all_params.get("b_wt", 1.0), "b_m": self.global_b_m}
+            }
+
+        num_patch_types = (
+            max(p[0] for p in self.patch_sequence) + 1 if self.patch_sequence else 1
+        )
+        self.patch_params = np.array(
+            [
                 [
-                    [
-                        env_map.get(str(i), {}).get("b_wt", 1.0),
-                        env_map.get(str(i), {}).get("b_m", self.global_b_m),
-                    ]
-                    for i in range(len(env_map) if env_map else 1)
+                    env_map.get(str(i), {}).get(
+                        "b_wt", self.all_params.get("b_wt", 1.0)
+                    ),
+                    env_map.get(str(i), {}).get("b_m", self.global_b_m),
                 ]
-            )
+                for i in range(num_patch_types)
+            ]
+        )
         self._precompute_patch_indices()
+
+    def _setup_visualization(self, **params):
+        self.plotter: Optional[HexPlotter] = None
+        if params.get("run_mode") == "visualization" or "debug" in params.get(
+            "campaign_id", ""
+        ):
+            final_colormap = {1: "#02343F", 2: "#d35400"}
+
+            self.plotter = HexPlotter(hex_size=1.0, labels={}, colormap=final_colormap)
+            task_id_viz = params.get("task_id", "viz_task")
+            if "debug_bet_hedging" in params.get("campaign_id", ""):
+                task_id_viz = "bet_hedging_viz_run"
+            output_dir = Path(params.get("output_dir_viz", "figures/debug_runs"))
+            self.snapshot_dir = output_dir / task_id_viz
+            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+            self.max_snapshots = params.get("max_snapshots", 50)
+            self.snapshot_q_offset = params.get("snapshot_q_offset", 2.0)
+            self.snapshots_taken = 0
+            boundary_indices = np.where(np.diff(self.q_to_patch_index) != 0)[0]
+            self.snapshot_q_triggers = [
+                (q_idx + 0.5) - self.snapshot_q_offset for q_idx in boundary_indices
+            ]
+            self.next_snapshot_trigger_index = 0
 
     def _initialize_population_pointytop(
         self, ic_type: str, patch_size: int
@@ -296,14 +339,17 @@ class GillespieSimulation:
         event_type, parent, target = self.idx_to_event[event_idx]
         self._execute_event(event_type, parent, target)
 
-        # --- REPLACED DYNAMIC SNAPSHOT LOGIC ---
-        if self.plotter and self.snapshots_taken < self.max_snapshots:
+        if (
+            self.plotter
+            and hasattr(self, "max_snapshots")
+            and self.snapshots_taken < self.max_snapshots
+        ):
             if self.next_snapshot_trigger_index < len(self.snapshot_q_triggers):
                 next_trigger_q = self.snapshot_q_triggers[
                     self.next_snapshot_trigger_index
                 ]
                 if self.mean_front_position >= next_trigger_q:
-                    # Take snapshot
+                    # FIX: Restore the rich, informative snapshot title.
                     boundary_q = next_trigger_q + self.snapshot_q_offset
                     title = (
                         f"Task {self.snapshot_dir.name[-12:]}\n"
@@ -319,10 +365,8 @@ class GillespieSimulation:
                     )
                     self.plotter.save_figure(snapshot_path)
 
-                    # Update state
                     self.snapshots_taken += 1
                     self.next_snapshot_trigger_index += 1
-        # --- END REPLACED LOGIC ---
 
         boundary_hit = self.mean_front_position >= self.length - 2
         return True, boundary_hit
@@ -334,16 +378,13 @@ class GillespieSimulation:
     def _precompute_patch_indices(self):
         self.q_to_patch_index = np.zeros(self.length, dtype=int)
         current_q = 0
-        if not self.patch_sequence or self.patch_sequence[0][1] == 0:
+        if not hasattr(self, "patch_sequence") or not self.patch_sequence:
             return
-
-        # This function now correctly iterates over the full, explicit patch sequence
         for patch_type, width in self.patch_sequence:
-            start = current_q
-            end = current_q + width
+            start, end = current_q, current_q + width
             if start < self.length:
                 self.q_to_patch_index[start : min(end, self.length)] = patch_type
-            current_q += width
+            current_q = end
             if current_q >= self.length:
                 break
 
@@ -361,7 +402,6 @@ class GillespieSimulation:
         return wrapped
 
     def _get_params_for_q(self, q: int):
-        """Gets environmental parameters for a given q-coordinate."""
         q_idx = np.clip(int(q), 0, self.length - 1)
         patch_idx = self.q_to_patch_index[q_idx]
         return self.patch_params[patch_idx]
@@ -376,10 +416,15 @@ class GillespieSimulation:
         return neighbor.q >= parent.q
 
     def _add_event(self, event: Tuple, rate: float):
-        if not self.free_indices:
-            raise MemoryError("SummedRateTree is full.")
-        idx = self.free_indices.pop()
-        self.event_to_idx[event], self.idx_to_event[idx] = idx, event
+        if self.free_indices:
+            idx = self.free_indices.pop()
+        else:
+            idx = self.next_event_idx
+            if idx >= self.MAX_EVENTS:
+                raise MemoryError("SummedRateTree event capacity exceeded.")
+            self.next_event_idx += 1
+        self.event_to_idx[event] = idx
+        self.idx_to_event[idx] = event
         self.tree.update(idx, rate)
 
     def _remove_event(self, event: Tuple):

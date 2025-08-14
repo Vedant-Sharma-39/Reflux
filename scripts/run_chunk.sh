@@ -1,5 +1,5 @@
 #!/bin/bash
-# FILE: scripts/run_chunk.sh (v4.4 - Definitive Exit Code Fix)
+# FILE: scripts/run_chunk.sh (Corrected with -m flag to fix ModuleNotFoundError)
 # This version fixes the subtle but critical bug where `set -e` would cause
 # the script to exit prematurely when the `while read` loop finished.
 
@@ -55,13 +55,17 @@ while IFS= read -r PARAMS_JSON; do
 
     echo -n "[$(date '+%T')] Processing task ID: ${task_id}... "
     
-    # The worker script must be called with both --params and --output-dir arguments.
-    if ! python3 "src/worker.py" --params "${PARAMS_JSON}" --output-dir "${RAW_DATA_DIR}" >> "${OUTPUT_FILE}"; then
+    # --- THE FIX IS HERE ---
+    # We now run the worker as a module (-m) from the project root.
+    # This ensures that Python's import system can find the 'src' package.
+    if ! python3 -m "src.worker" --params "${PARAMS_JSON}" --output-dir "${RAW_DATA_DIR}" >> "${OUTPUT_FILE}"; then
         echo "FAILED. See this log for the worker's error message."
         ((num_failed++))
     else
         echo "OK."
     fi
+    # --- END OF FIX ---
+
     ((num_processed++))
 done < <(sed -n "${START_LINE},${END_LINE}p" "${TASK_LIST_FILE}") || true
 

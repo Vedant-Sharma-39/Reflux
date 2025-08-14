@@ -10,6 +10,8 @@ if TYPE_CHECKING:
 
 
 class MetricTracker:
+    """Base class for all metric trackers."""
+
     def __init__(self, sim: "GillespieSimulation", **kwargs):
         self.sim = sim
 
@@ -68,7 +70,7 @@ class RelaxationConvergenceTracker(MetricTracker):
     """
     For 'relaxation_converged' runs. Records a high-resolution time series
     and stops the simulation once the mutant fraction has converged to a
-    steady state.
+    steady state using a robust, relative convergence criterion.
     """
 
     def __init__(
@@ -83,8 +85,6 @@ class RelaxationConvergenceTracker(MetricTracker):
         self.sample_interval = sample_interval
         self.next_log_time = 0.0
         self.history: List[Dict] = []
-
-        # For convergence checking
         self.convergence_window = convergence_window
         self.convergence_threshold = convergence_threshold
         self.rho_m_deque = deque(maxlen=convergence_window)
@@ -97,20 +97,29 @@ class RelaxationConvergenceTracker(MetricTracker):
         while self.sim.time >= self.next_log_time:
             current_rho_m = self.sim.mutant_fraction
             self.history.append(
-                {
-                    "time": self.next_log_time,
-                    "mutant_fraction": current_rho_m,
-                }
+                {"time": self.next_log_time, "mutant_fraction": current_rho_m}
             )
             self.rho_m_deque.append(current_rho_m)
             self.next_log_time += self.sample_interval
 
-            # Check for convergence only after the deque is full
+            # --- EFFICIENCY AND ROBUSTNESS FIX ---
+            # Check for convergence only after the deque is full.
             if len(self.rho_m_deque) == self.convergence_window:
-                # Stop if standard deviation is below threshold (i.e., it's flat)
-                if np.std(self.rho_m_deque) < self.convergence_threshold:
-                    self._is_done = True
-                    break
+                mean_rho = np.mean(self.rho_m_deque)
+                # Use relative standard deviation (coefficient of variation).
+                # This is robust to the scale of the mutant fraction.
+                # Only check if the mean is non-trivial to avoid division by zero.
+                if mean_rho > 1e-6:
+                    relative_std_dev = np.std(self.rho_m_deque, ddof=1) / mean_rho
+                    if relative_std_dev < self.convergence_threshold:
+                        self._is_done = True
+                        break
+                # If the mean is essentially zero, check absolute deviation.
+                else:
+                    if np.std(self.rho_m_deque, ddof=1) < self.convergence_threshold:
+                        self._is_done = True
+                        break
+            # --- END FIX ---
 
     def finalize(self) -> Dict[str, Any]:
         return {"timeseries": self.history}
@@ -479,79 +488,208 @@ class CyclicTimeSeriesTracker(MetricTracker):
         return self.state == "done"
 
     def after_step_hook(self):
-        if self.is_done():
+        if self.state == "done":
             return
 
-        # --- State: WARMING UP ---
-        if self.state == "warming_up":
-            target_q = (self.cycles_completed + 1) * self.cycle_q
-            if self.sim.mean_front_position >= target_q:
-                self.cycles_completed += 1
-                if self.cycles_completed >= self.warmup_cycles:
-                    self.state = "measuring"
-                    self.measurement_start_time = self.sim.time
-                    self.next_log_time = self.sim.time
+        # Use a while loop to robustly "catch up" on all cycles completed in this step
+        while (
+            self.sim.mean_front_position >= (self.cycles_completed + 1) * self.cycle_q
+        ):
+            self.cycles_completed += 1
 
-        # --- State: MEASURING ---
+            # Check for state transitions *inside* the loop
+            if (
+                self.state == "warming_up"
+                and self.cycles_completed >= self.warmup_cycles
+            ):
+                self.state = "measuring"
+                self.measurement_start_time = self.sim.time
+                self.next_log_time = self.sim.time
+
+            # Check for the end condition
+            if self.cycles_completed >= self.total_cycles:
+                self.state = "done"
+                # Break from this loop; no need to check further cycles
+                break
+
+        # After the cycle counter is fully updated, perform logging if we are in the measuring state
         if self.state == "measuring":
-            # Record high-resolution data points
+            # Use a while loop here too, in case sim.time advanced significantly
             while self.sim.time >= self.next_log_time:
-                self.history.append(
-                    {
-                        "time": self.next_log_time - self.measurement_start_time,
-                        "mutant_fraction": self.sim.mutant_fraction,
-                    }
-                )
+                # We only log if the simulation isn't already done
+                if self.state != "done":
+                    self.history.append(
+                        {
+                            "time": self.next_log_time - self.measurement_start_time,
+                            "mutant_fraction": self.sim.mutant_fraction,
+                        }
+                    )
                 self.next_log_time += self.sample_interval
-
-            # Check if the current measurement cycle is complete
-            target_q = (self.cycles_completed + 1) * self.cycle_q
-            if self.sim.mean_front_position >= target_q:
-                self.cycles_completed += 1
-                if self.cycles_completed >= self.total_cycles:
-                    self.state = "done"
 
     def finalize(self) -> Dict[str, Any]:
         # The main output is the bulky timeseries data
         return {"timeseries": self.history}
 
 
+class FrontConvergenceTracker(MetricTracker):
+
+    def __init__(
+        self,
+        sim: "GillespieSimulation",
+        max_duration,
+        duration_unit,
+        convergence_window,
+        convergence_threshold,
+        **kwargs,
+    ):
+        super().__init__(sim=sim, **kwargs)
+        self.max_duration = max_duration
+        self.duration_unit = duration_unit
+        self.convergence_window = convergence_window
+        self.convergence_threshold = convergence_threshold
+
+        self.speeds = deque(maxlen=self.convergence_window)
+        self.rho_m_samples = deque(maxlen=self.convergence_window)
+        self.termination_reason = f"max_{self.duration_unit}_reached"
+        self.durations_completed = 0
+        self._is_done = False
+
+        if self.duration_unit == "cycles":
+            env_map = kwargs.get("environment_map", {})
+            patch_width = kwargs.get("patch_width", 0)
+            env_def = kwargs.get("env_definition", {})
+
+            cycle_q = 0.0
+            if patch_width > 0 and env_map:
+                cycle_q = patch_width * len(env_map)
+            elif env_def:
+                cycle_q = (
+                    sum(p["width"] for p in env_def.get("patches", []))
+                    if not env_def.get("scrambled")
+                    else env_def.get("cycle_length", 0)
+                )
+
+            self.interval_length = cycle_q
+            if self.interval_length <= 0:
+                raise ValueError(
+                    "Cycle-based convergence requires a defined cycle length."
+                )
+        else:  # 'time'
+            self.interval_length = kwargs.get("convergence_check_interval", 100.0)
+
+    def is_done(self) -> bool:
+        return self._is_done
+
+    def after_step_hook(self):
+        if not hasattr(self, "last_pos"):
+            self.last_pos = self.sim.mean_front_position
+            self.last_time = self.sim.time
+
+        current_progress = (
+            self.sim.mean_front_position
+            if self.duration_unit == "cycles"
+            else self.sim.time
+        )
+        target_progress = (self.durations_completed + 1) * self.interval_length
+
+        if current_progress >= target_progress:
+            end_pos, end_time = self.sim.mean_front_position, self.sim.time
+            delta_dist, delta_time = end_pos - self.last_pos, end_time - self.last_time
+
+            self.speeds.append(delta_dist / delta_time if delta_time > 1e-9 else 0.0)
+            self.rho_m_samples.append(self.sim.mutant_fraction)
+            self.durations_completed += 1
+
+            self.last_pos, self.last_time = end_pos, end_time
+
+            if len(self.speeds) == self.convergence_window:
+                mean_speed = np.mean(self.speeds)
+                if (
+                    mean_speed > 1e-9
+                    and (np.std(self.speeds, ddof=1) / mean_speed)
+                    < self.convergence_threshold
+                ):
+                    self.termination_reason = "converged"
+                    self._is_done = True
+
+            if self.durations_completed >= self.max_duration:
+                self._is_done = True
+
+    def finalize(self) -> Dict[str, Any]:
+        return {
+            "avg_front_speed": np.mean(self.speeds) if self.speeds else 0.0,
+            "var_front_speed": (
+                np.var(self.speeds, ddof=1) if len(self.speeds) > 1 else 0.0
+            ),
+            "avg_rho_M": np.mean(self.rho_m_samples) if self.rho_m_samples else 0.0,
+            f"num_{self.duration_unit}_completed": self.durations_completed,
+            "termination_reason": self.termination_reason,
+        }
+
+
 class MetricsManager:
-    def __init__(self):
+    """Orchestrates the creation and execution of metric trackers."""
+
+    def __init__(self, params: Dict[str, Any]):
+        self.params = params
         self._tracker_configs: List[Tuple[Type[MetricTracker], Dict[str, Any]]] = []
         self.trackers: List[MetricTracker] = []
         self._is_initialized = False
 
-    def add_tracker(self, tracker_class: Type[MetricTracker], **kwargs):
+    def add_tracker(
+        self, tracker_class: Type[MetricTracker], tracker_param_map: Dict[str, str]
+    ):
+        """Adds a tracker to be initialized when the simulation is registered."""
         if self._is_initialized:
             raise RuntimeError("Cannot add trackers after simulation registration.")
-        self._tracker_configs.append((tracker_class, kwargs))
+        self._tracker_configs.append((tracker_class, tracker_param_map))
 
     def register_simulation(self, sim: "GillespieSimulation"):
+        """Creates tracker instances and links them to the simulation."""
         if self._is_initialized:
             raise RuntimeError("Simulation already registered.")
-        for tracker_class, kwargs in self._tracker_configs:
-            self.trackers.append(tracker_class(sim=sim, **kwargs))
+
+        for tracker_class, tracker_param_map in self._tracker_configs:
+            # --- Dependency Injection Happens Here ---
+            # Build the kwargs dict for the tracker from the master params dict.
+            tracker_kwargs = {}
+            for key, val_str in tracker_param_map.items():
+                if val_str.startswith("'") and val_str.endswith("'"):
+                    tracker_kwargs[key] = val_str.strip("'")
+                elif val_str in self.params:
+                    tracker_kwargs[key] = self.params[val_str]
+
+            # Also pass ALL original params to kwargs for full, failsafe access
+            tracker_kwargs.update(self.params)
+
+            self.trackers.append(tracker_class(sim=sim, **tracker_kwargs))
+
+        sim.metrics_manager = self
         self._is_initialized = True
+        self.initialize_all()
 
     def initialize_all(self):
+        """Initializes all registered trackers."""
         if not self._is_initialized:
             return
         for tracker in self.trackers:
             tracker.initialize()
 
     def after_step_hook(self):
+        """Hook called after each simulation step."""
         if not self._is_initialized:
             return
         for tracker in self.trackers:
             tracker.after_step_hook()
 
     def is_done(self) -> bool:
+        """Checks if any tracker has signaled completion."""
         if not self._is_initialized:
             return False
         return any(tracker.is_done() for tracker in self.trackers)
 
     def finalize(self) -> Dict[str, Any]:
+        """Gathers results from all trackers."""
         if not self._is_initialized:
             return {}
         all_results = {}

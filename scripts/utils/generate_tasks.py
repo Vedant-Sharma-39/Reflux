@@ -59,10 +59,20 @@ def generate_tasks_for_experiment(experiment_name: str) -> List[Dict[str, Any]]:
     for set_id, sim_set in config.get("sim_sets", {}).items():
         base_params = sim_set.get("base_params", {}).copy()
         num_replicates = base_params.pop("num_replicates", 1)
-        grid_param_keys = list(sim_set["grid_params"].keys())
-        grid_value_lists = [
-            PARAM_GRID[sim_set["grid_params"][k]] for k in grid_param_keys
-        ]
+        grid_params = sim_set.get("grid_params", {})
+        grid_param_keys = list(grid_params.keys())
+
+        # --- THE FIX IS HERE ---
+        grid_value_lists = []
+        for k in grid_param_keys:
+            val = grid_params[k]
+            # If the value is a string, look it up in PARAM_GRID.
+            # If it's already a list, just use it directly.
+            if isinstance(val, str):
+                grid_value_lists.append(PARAM_GRID.get(val, [val]))
+            else:
+                grid_value_lists.append(val)
+        # --- END OF FIX ---
 
         for combo in itertools.product(*grid_value_lists):
             instance_params = dict(zip(grid_param_keys, combo))
@@ -75,21 +85,24 @@ def generate_tasks_for_experiment(experiment_name: str) -> List[Dict[str, Any]]:
                     "campaign_id": campaign_id,
                 }
 
-                # --- NEW VALIDATION BLOCK ---
                 if task_params["run_mode"] == "bet_hedging_converged":
                     if "env_definition" in task_params:
-                        env_def = task_params["env_definition"]
-                        # Resolve the env_def if it's a string reference
-                        if isinstance(env_def, str) and env_def in PARAM_GRID:
-                            env_def = PARAM_GRID[env_def]
-
-                        # Now check the dictionary
-                        if env_def.get("scrambled") and "cycle_length" not in env_def:
+                        env_def_val = task_params["env_definition"]
+                        if isinstance(env_def_val, str):
+                            resolved_def = PARAM_GRID.get("env_definitions", {}).get(
+                                env_def_val
+                            )
+                            if resolved_def:
+                                env_def_val = resolved_def
+                        if (
+                            isinstance(env_def_val, dict)
+                            and env_def_val.get("scrambled")
+                            and "cycle_length" not in env_def_val
+                        ):
                             raise ValueError(
                                 f"Configuration Error in '{experiment_name}': "
-                                f"Scrambled environment '{env_def.get('name')}' is missing the 'cycle_length' key."
+                                f"Scrambled environment '{env_def_val.get('name')}' is missing the 'cycle_length' key."
                             )
-                # --- END VALIDATION BLOCK ---
 
                 resolved_params = resolve_parameters(task_params)
                 resolved_params["task_id"] = generate_task_id(resolved_params)
