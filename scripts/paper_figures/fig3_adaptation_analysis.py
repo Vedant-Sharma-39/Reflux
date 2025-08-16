@@ -1,6 +1,6 @@
 # FILE: scripts/paper_figures/fig3_adaptation_analysis.py
-# Generates the definitive Figure 3. This version is updated to work with the
-# migrated data and explicitly removes data points where phi=1.0 from the analysis.
+# Generates the definitive Figure 3 from the "bet_hedging_final" experiment,
+# specifically using the data for the 60px periodic environment.
 
 import os
 import sys
@@ -53,75 +53,67 @@ def main():
     project_root = get_project_root()
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    from src.config import EXPERIMENTS
+    from src.config import EXPERIMENTS, PARAM_GRID
 
     try:
-        main_campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
-        controls_campaign_id = EXPERIMENTS["bet_hedging_controls"]["campaign_id"]
+        # --- CHANGE: Target the bet_hedging_final experiment ---
+        campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
     except KeyError as e:
-        print(f"Error: Required key {e} not found in src/config.py.", file=sys.stderr)
-        sys.exit(1)
-
-    # --- Load and Combine Data ---
-    dfs = []
-    for campaign_id in [main_campaign_id, controls_campaign_id]:
-        summary_path = os.path.join(
-            project_root,
-            "data",
-            campaign_id,
-            "analysis",
-            f"{campaign_id}_summary_aggregated.csv",
+        print(
+            f"Error: Required experiment key 'bet_hedging_final' not found in src/config.py.",
+            file=sys.stderr,
         )
-        if os.path.exists(summary_path):
-            print(f"Loading data from: {summary_path}")
-            dfs.append(pd.read_csv(summary_path))
-        else:
-            print(
-                f"Warning: Could not find summary file at {summary_path}",
-                file=sys.stderr,
-            )
-
-    if not dfs:
-        print("Error: No data files found. Cannot generate plot.", file=sys.stderr)
         sys.exit(1)
 
-    df = pd.concat(dfs, ignore_index=True)
+    # --- Data Loading ---
+    summary_path = os.path.join(
+        project_root,
+        "data",
+        campaign_id,
+        "analysis",
+        f"{campaign_id}_summary_aggregated.csv",
+    )
+    if not os.path.exists(summary_path):
+        print(
+            f"Error: Data file not found for campaign '{campaign_id}'. Run 'make consolidate CAMPAIGN={campaign_id}'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # --- THE FIX IS HERE: EXCLUDE PHI = 1.0 ---
-    print(f"\nTotal rows loaded: {len(df)}")
+    print(f"Loading data from: {summary_path}")
+    df = pd.read_csv(summary_path)
+
+    # --- Data Processing and Filtering ---
     df = df[~np.isclose(df["phi"], 1.0)].copy()
-    print(f"Rows after removing phi=1.0: {len(df)}")
-    # --- END OF FIX ---
+    df_filtered = df[df["termination_reason"] == "converged"].copy()
+
+    # --- CHANGE: Explicitly filter for the 60w periodic environment ---
+    # This makes the plot specific and robust, even though the source data contains more.
+    env_name = PARAM_GRID["env_definitions"]["symmetric_refuge_60w"]["name"]
+    df_plot_data = df_filtered[
+        (df_filtered["env_definition"] == env_name) & (df_filtered["k_total"] > 0)
+    ].copy()
+
+    if df_plot_data.empty:
+        print(
+            f"\nERROR: No data found for environment '{env_name}' in campaign '{campaign_id}' after filtering.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     figure_dir = os.path.join(project_root, "figures")
     os.makedirs(figure_dir, exist_ok=True)
     output_path = os.path.join(figure_dir, "fig3_adaptation_analysis.png")
+    print(f"\nGenerating definitive Figure 3 from campaign: {campaign_id}")
 
-    print(
-        f"\nGenerating definitive Figure 3 from campaigns: {[main_campaign_id, controls_campaign_id]}"
-    )
-
-    # --- Filtering Protocol ---
-    df_filtered = df[df["termination_reason"] != "stalled_or_boundary_hit"].copy()
-
-    df_plot_data = df_filtered[
-        (df_filtered["migrated_from_campaign"] == main_campaign_id)
-        & (df_filtered["k_total"] > 0)
-    ].copy()
-
-    if df_plot_data.empty:
-        print("\nERROR: The dataframe `df_plot_data` is empty after filtering.")
-        print(
-            f"This likely means no data matched the source campaign filter: migrated_from_campaign == '{main_campaign_id}'"
-        )
-        sys.exit(1)
-
+    # --- Plotting Setup ---
     sns.set_theme(style="ticks", context="talk")
     fig, axes = plt.subplots(2, 2, figsize=(18, 16), constrained_layout=True)
     fig.suptitle(
-        "The Fitness Landscape is Rugged and Tuned by Selection", fontsize=28, y=1.03
+        f"Fitness Landscape in a Periodic Environment ({env_name})", fontsize=28, y=1.03
     )
 
+    # Panels A, B, C: Fitness landscapes at different selection strengths
     bm_all = np.sort(df_plot_data["b_m"].unique())
     bm_targets = [0.9, 0.5, 0.2]
     bm_vals = [find_nearest(bm_all, val) for val in bm_targets]
@@ -137,11 +129,15 @@ def main():
         if not df_panel.empty:
             plot_strategy_panel(ax, df_panel, title)
 
+    # Panel D: Optimal Strategy Comparison
     ax_d = axes[1, 1]
 
-    # --- Panel D: Optimal Strategy Comparison ---
-    phi_irr_val = find_nearest(df_filtered["phi"].unique(), -1.0)
-    df_baseline_runs = df_filtered[np.isclose(df_filtered["phi"], phi_irr_val)].copy()
+    # Filter the full dataset for the specific environment to get a clean baseline
+    df_periodic_filtered = df_filtered[df_filtered["env_definition"] == env_name]
+    phi_irr_val = find_nearest(df_periodic_filtered["phi"].unique(), -1.0)
+    df_baseline_runs = df_periodic_filtered[
+        np.isclose(df_periodic_filtered["phi"], phi_irr_val)
+    ].copy()
     df_baseline_stats = (
         df_baseline_runs.groupby("b_m")["avg_front_speed"]
         .agg(["mean", "std"])

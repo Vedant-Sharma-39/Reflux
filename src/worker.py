@@ -1,4 +1,4 @@
-# FILE: src/worker.py (Final, Simplified Version)
+# FILE: src/worker.py (Corrected)
 
 import argparse
 import gzip
@@ -20,6 +20,7 @@ if project_root not in sys.path:
 from src.core.model import GillespieSimulation
 from src.core.metrics import (
     MetricsManager,
+    MetricTracker, # Import the base class for the visualization fix
     BoundaryDynamicsTracker,
     InterfaceRoughnessTracker,
     SteadyStatePropertiesTracker,
@@ -79,6 +80,9 @@ RUN_MODE_CONFIG = {
             "convergence_threshold": "convergence_threshold",
         },
     },
+    # --- THIS IS THE FIX for Problem 3 ---
+    "visualization": {"tracker_class": MetricTracker, "tracker_params": {}},
+    # --- END FIX ---
 }
 
 # List of keys for data that is too large to store in the main summary CSV.

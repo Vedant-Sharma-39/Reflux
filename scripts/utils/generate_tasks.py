@@ -85,25 +85,6 @@ def generate_tasks_for_experiment(experiment_name: str) -> List[Dict[str, Any]]:
                     "campaign_id": campaign_id,
                 }
 
-                if task_params["run_mode"] == "bet_hedging_converged":
-                    if "env_definition" in task_params:
-                        env_def_val = task_params["env_definition"]
-                        if isinstance(env_def_val, str):
-                            resolved_def = PARAM_GRID.get("env_definitions", {}).get(
-                                env_def_val
-                            )
-                            if resolved_def:
-                                env_def_val = resolved_def
-                        if (
-                            isinstance(env_def_val, dict)
-                            and env_def_val.get("scrambled")
-                            and "cycle_length" not in env_def_val
-                        ):
-                            raise ValueError(
-                                f"Configuration Error in '{experiment_name}': "
-                                f"Scrambled environment '{env_def_val.get('name')}' is missing the 'cycle_length' key."
-                            )
-
                 resolved_params = resolve_parameters(task_params)
                 resolved_params["task_id"] = generate_task_id(resolved_params)
                 all_tasks.append(resolved_params)

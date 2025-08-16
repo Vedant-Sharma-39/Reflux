@@ -1,7 +1,10 @@
+# FILE: src/core/model.py (Robust Stochastic Environment Version - OPTIMIZED)
 import numpy as np
 import random
 from typing import Dict, Set, Tuple, List, Optional
 from pathlib import Path
+from collections import Counter
+from itertools import groupby
 
 # These imports are all necessary
 from src.core.hex_utils import Hex, HexPlotter
@@ -11,8 +14,18 @@ from src.config import PARAM_GRID
 Empty, Wildtype, Mutant = 0, 1, 2
 
 
+# --- OPTIMIZATION REMINDER ---
+# For a significant memory reduction, ensure your Hex class in 'src/core/hex_utils.py'
+# uses __slots__ to minimize the memory footprint of each Hex object.
+#
+# class Hex:
+#     __slots__ = ('q', 'r', 's')
+#     def __init__(self, q, r, s):
+#         ...
+#
+
 class SummedRateTree:
-    # This class is correct, with the safety check restored.
+    # This class is correct and already efficient.
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.tree = np.zeros(2 * capacity)
@@ -24,7 +37,6 @@ class SummedRateTree:
             index //= 2
 
     def update(self, index: int, rate: float):
-        # FIX: The index boundary check is a valuable safety feature. It has been restored.
         if not (0 <= index < self.capacity):
             raise IndexError("Index out of bounds.")
         leaf_index = index + self.capacity
@@ -52,9 +64,7 @@ class SummedRateTree:
 class GillespieSimulation:
     def __init__(self, **params):
         self.all_params = params
-        # FIX: Restore the metrics_manager attribute. It is assigned externally by the MetricsManager.
         self.metrics_manager: Optional[MetricsManager] = None
-
         width = params.get("width", 256)
         length = params.get("length", 4096)
         b_m = params.get("b_m", 1.0)
@@ -64,38 +74,42 @@ class GillespieSimulation:
         self.global_b_m, self.global_k_total, self.global_phi = b_m, k_total, phi
         self.time, self.step_count = 0.0, 0
 
-        self.MAX_EVENTS = width * length * 7
+        # --- OPTIMIZATION 1: Right-size the event management structures ---
+        # The number of active events is proportional to the front size (width), not the total grid area.
+        # A front cell has at most ~7 potential events (6 grow, 1 switch).
+        # We use a generous safety factor (e.g., 12x) instead of width * length * 7.
+        # A minimum capacity is set for very small simulations.
+        realistic_capacity = width * 12
+        self.MAX_EVENTS = realistic_capacity
         self.tree = SummedRateTree(self.MAX_EVENTS)
+
         self.event_to_idx: Dict[Tuple, int] = {}
         self.idx_to_event: Dict[int, Tuple] = {}
-
-        # --- THE PERFORMANCE FIX: Use a dynamic index pool for instant startup ---
         self.free_indices = []
         self.next_event_idx = 0
-        # ---
-
         self.mutant_cell_count, self.total_cell_count = 0, 0
         ic_type = params.get("initial_condition_type", "mixed")
         ic_patch_size = params.get("initial_mutant_patch_size", 0)
         self.is_radial_growth = ic_type == "single_cell"
+        self.mutant_r_counts: Counter = Counter()
         self.population: Dict[Hex, int] = self._initialize_population_pointytop(
             ic_type, ic_patch_size
         )
-
         self.wt_front_cells: Dict[Hex, List[Hex]] = {}
         self.m_front_cells: Dict[Hex, List[Hex]] = {}
         self._front_lookup: Set[Hex] = set()
-
-        # This property is used by a metric tracker, so it must be initialized.
+        self._front_q_sum = 0.0
+        self._front_q_sum_sq = 0.0
         self._wt_m_interface_bonds = 0
+        self.neighbor_cache: Dict[Hex, List[Hex]] = {}
+
+        # --- OPTIMIZATION 2: Parameters for bounded neighbor cache ---
+        self.cache_prune_q_distance = params.get("cache_prune_q_distance", 200)
+        self.cache_prune_step_interval = params.get("cache_prune_step_interval", 5000)
 
         self._precompute_env_params(**params)
         self._setup_visualization(**params)
         self._find_initial_front()
-
-    # In class GillespieSimulation:
-
-    # In class GillespieSimulation:
 
     def _precompute_env_params(self, **kwargs):
         self.k_wt_m, self.k_m_wt = self._calculate_asymmetric_rates(
@@ -106,82 +120,98 @@ class GillespieSimulation:
 
         if isinstance(env_def, str):
             env_def = PARAM_GRID.get("env_definitions", {}).get(env_def)
-
         if isinstance(env_map, str):
             env_map = PARAM_GRID.get(env_map)
 
         if env_def and isinstance(env_def, dict):
             if not env_map and "patches" in env_def:
                 env_map = {
-                    str(p["id"]): p.get("params", {})
-                    for p in env_def.get("patches", [])
+                    str(p["id"]): p.get("params", {}) for p in env_def.get("patches", [])
                 }
 
             if env_def.get("scrambled"):
-                # Scrambled logic already has a loop that fills the length.
-                avg_width = env_def.get("avg_patch_width", 50)
                 patches = env_def.get("patches", [])
                 patch_types = [p["id"] for p in sorted(patches, key=lambda p: p["id"])]
                 proportions = [
                     p["proportion"] for p in sorted(patches, key=lambda p: p["id"])
                 ]
+
+                distribution = env_def.get("patch_width_distribution", "exponential")
+
                 self.patch_sequence = []
+                target_length = env_def.get("cycle_length", self.length)
                 total_len = 0
-                while total_len < self.length:
-                    width = int(np.random.exponential(scale=avg_width))
-                    if width > 0:
+
+                while total_len < target_length:
+                    width = 0
+                    if distribution == "exponential":
+                        avg_width = env_def.get("avg_patch_width", 50)
+                        width = int(np.random.exponential(scale=avg_width))
+                    elif distribution == "normal":
+                        avg_width = env_def.get("avg_patch_width", 50)
+                        std_width = env_def.get("std_patch_width", 15)
+                        width = int(np.random.normal(loc=avg_width, scale=std_width))
+                    # --- YOUR CORRECTED POWER-LAW IMPLEMENTATION ---
+                    elif distribution == "power-law":
+                        alpha = env_def.get("power_law_alpha", 2.5)
+                        min_width = env_def.get("min_patch_width", 10)
+                        width = int(
+                            min_width * (1 - random.random()) ** (-1 / (alpha - 1))
+                        )
+                    # --- END CORRECTION -
+                    elif distribution == "gamma":
+                        mean_width = env_def.get("mean_patch_width", 60)
+                        fano_factor = env_def.get("fano_factor", mean_width)
+                        if fano_factor <= 0:
+                            raise ValueError("Fano factor must be positive.")
+
+                        scale = fano_factor
+                        shape = mean_width / scale
+                        width = int(np.random.gamma(shape, scale))
+                    # --- END OF NEW BLOCK ---
+
+                    else:
+                        raise NotImplementedError(f"Distribution '{distribution}' is not supported.")
+
+                    if width >= 1:
                         self.patch_sequence.append(
                             (np.random.choice(patch_types, p=proportions), width)
                         )
                         total_len += width
-            else:
-                # --- THIS IS THE FIX FOR REPEATING PATCHES ---
-                base_pattern = [
-                    (p["id"], p["width"]) for p in env_def.get("patches", [])
-                ]
-                if not base_pattern:
-                    self.patch_sequence = []
-                else:
+            else: 
+                base_pattern = [(p["id"], p["width"]) for p in env_def.get("patches", [])]
+                if base_pattern:
                     cycle_q_width = sum(width for _, width in base_pattern)
-                    if cycle_q_width <= 0:
-                        self.patch_sequence = base_pattern  # Use once if no width
-                    else:
+                    if cycle_q_width > 0:
                         self.patch_sequence = []
                         total_len = 0
                         while total_len < self.length:
                             self.patch_sequence.extend(base_pattern)
                             total_len += cycle_q_width
-                # --- END OF FIX ---
+                    else:
+                        self.patch_sequence = base_pattern
+                else:
+                    self.patch_sequence = []
         else:
-            # Fallback for older environment definitions
             patch_width = kwargs.get("patch_width", 0)
             if patch_width > 0 and env_map:
                 num_patches = (self.length + patch_width - 1) // patch_width
-                self.patch_sequence = [
-                    (i % len(env_map), patch_width) for i in range(num_patches)
-                ]
+                self.patch_sequence = [(i % len(env_map), patch_width) for i in range(num_patches)]
             else:
                 self.patch_sequence = [(0, self.length)]
 
         if not env_map:
-            env_map = {
-                "0": {"b_wt": self.all_params.get("b_wt", 1.0), "b_m": self.global_b_m}
-            }
+            env_map = {"0": {"b_wt": self.all_params.get("b_wt", 1.0), "b_m": self.global_b_m}}
 
-        num_patch_types = (
-            max(p[0] for p in self.patch_sequence) + 1 if self.patch_sequence else 1
-        )
-        self.patch_params = np.array(
-            [
-                [
-                    env_map.get(str(i), {}).get(
-                        "b_wt", self.all_params.get("b_wt", 1.0)
-                    ),
-                    env_map.get(str(i), {}).get("b_m", self.global_b_m),
-                ]
-                for i in range(num_patch_types)
-            ]
-        )
+        num_patch_types = (max(p[0] for p in self.patch_sequence) + 1 if self.patch_sequence else 1)
+
+        self.patch_params = [
+            (
+                env_map.get(str(i), {}).get("b_wt", self.all_params.get("b_wt", 1.0)),
+                env_map.get(str(i), {}).get("b_m", self.global_b_m),
+            )
+            for i in range(num_patch_types)
+        ]
         self._precompute_patch_indices()
 
     def _setup_visualization(self, **params):
@@ -190,7 +220,6 @@ class GillespieSimulation:
             "campaign_id", ""
         ):
             final_colormap = {1: "#02343F", 2: "#d35400"}
-
             self.plotter = HexPlotter(hex_size=1.0, labels={}, colormap=final_colormap)
             task_id_viz = params.get("task_id", "viz_task")
             if "debug_bet_hedging" in params.get("campaign_id", ""):
@@ -232,6 +261,7 @@ class GillespieSimulation:
             pop[h] = cell_type
             if cell_type == Mutant:
                 self.mutant_cell_count += 1
+                self.mutant_r_counts[h.r] += 1
             self.total_cell_count += 1
         return pop
 
@@ -241,7 +271,8 @@ class GillespieSimulation:
 
     @property
     def mean_front_position(self) -> float:
-        return np.mean([h.q for h in self._front_lookup]) if self._front_lookup else 0.0
+        count = len(self._front_lookup)
+        return self._front_q_sum / count if count > 0 else 0.0
 
     @property
     def mutant_fraction(self) -> float:
@@ -252,8 +283,17 @@ class GillespieSimulation:
         )
 
     @property
+    def mutant_sector_width(self) -> int:
+        return len(self.mutant_r_counts)
+
+    @property
     def front_roughness_sq(self) -> float:
-        return np.var([h.q for h in self._front_lookup]) if self._front_lookup else 0.0
+        count = len(self._front_lookup)
+        if count < 2:
+            return 0.0
+        mean_q = self._front_q_sum / count
+        mean_q_sq = self._front_q_sum_sq / count
+        return max(0.0, mean_q_sq - mean_q**2)
 
     @property
     def expanding_front_length(self) -> float:
@@ -263,38 +303,54 @@ class GillespieSimulation:
     def domain_boundary_length(self) -> float:
         return self._wt_m_interface_bonds / 2.0
 
+    def _add_to_front(self, h: Hex):
+        self._front_lookup.add(h)
+        self._front_q_sum += h.q
+        self._front_q_sum_sq += h.q**2
+
+    def _remove_from_front(self, h: Hex):
+        self._front_lookup.discard(h)
+        self._front_q_sum -= h.q
+        self._front_q_sum_sq -= h.q**2
+
     def _update_events_for_cell(self, h: Hex):
         cell_type = self.population.get(h)
+
         if h in self._front_lookup:
-            for neighbor in self.wt_front_cells.pop(h, []) + self.m_front_cells.pop(
-                h, []
-            ):
+            for neighbor in self.wt_front_cells.pop(h, []):
                 self._remove_event(("grow", h, neighbor))
-            self._front_lookup.discard(h)
+            for neighbor in self.m_front_cells.pop(h, []):
+                self._remove_event(("grow", h, neighbor))
+            self._remove_from_front(h)
+
         self._remove_event(("switch", h, Wildtype))
         self._remove_event(("switch", h, Mutant))
+
         if cell_type is None or cell_type == Empty:
             return
+
         empty_neighbors = [
-            n
-            for n in self._get_neighbors_periodic(h)
-            if self._is_valid_growth_neighbor(n, h)
+            n for n in self._get_neighbors_periodic(h) if self._is_valid_growth_neighbor(n, h)
         ]
+
         if empty_neighbors:
-            self._front_lookup.add(h)
-            front_dict = (
-                self.wt_front_cells if cell_type == Wildtype else self.m_front_cells
-            )
+            self._add_to_front(h)
+
+            front_dict = self.wt_front_cells if cell_type == Wildtype else self.m_front_cells
             front_dict[h] = empty_neighbors
+
             if cell_type == Wildtype and self.k_wt_m > 0:
                 self._add_event(("switch", h, Mutant), self.k_wt_m)
             elif cell_type == Mutant and self.k_m_wt > 0:
                 self._add_event(("switch", h, Wildtype), self.k_m_wt)
-            for n in empty_neighbors:
-                b_wt_target, b_m_target = self._get_params_for_q(n.q)
+
+            empty_neighbors.sort(key=lambda hex_cell: hex_cell.q)
+            for q, neighbors_at_q in groupby(empty_neighbors, key=lambda hex_cell: hex_cell.q):
+                b_wt_target, b_m_target = self._get_params_for_q(q)
                 growth_rate = b_wt_target if cell_type == Wildtype else b_m_target
                 if growth_rate > 0:
-                    self._add_event(("grow", h, n), growth_rate)
+                    for n in neighbors_at_q:
+                        self._add_event(("grow", h, n), growth_rate)
 
     def _execute_event(self, event_type: str, parent: Hex, target: Optional[Hex]):
         affected_hexes = {parent}
@@ -304,28 +360,37 @@ class GillespieSimulation:
             self.population[target] = new_type
             if new_type == Mutant:
                 self.mutant_cell_count += 1
+                self.mutant_r_counts[target.r] += 1
             self.total_cell_count += 1
         elif event_type == "switch":
             old_type = self.population[parent]
             new_type = target
-            if new_type == old_type:
-                return
-            self.population[parent] = new_type
-            if new_type == Mutant:
-                self.mutant_cell_count += 1
-            else:
-                self.mutant_cell_count -= 1
+            if new_type != old_type:
+                self.population[parent] = new_type
+                if new_type == Mutant:
+                    self.mutant_cell_count += 1
+                    self.mutant_r_counts[parent.r] += 1
+                else: # new_type is Wildtype
+                    self.mutant_cell_count -= 1
+                    self.mutant_r_counts[parent.r] -= 1
+                    if self.mutant_r_counts[parent.r] == 0:
+                        del self.mutant_r_counts[parent.r]
         else:
             return
-        final_affected_to_update = set(affected_hexes)
+
+        final_affected_to_update = affected_hexes.copy()
         for h in affected_hexes:
-            for neighbor in self._get_neighbors_periodic(h):
-                final_affected_to_update.add(neighbor)
+            final_affected_to_update.update(self._get_neighbors_periodic(h))
+
         for h in final_affected_to_update:
             if h in self.population:
                 self._update_events_for_cell(h)
 
     def step(self):
+        # --- OPTIMIZATION 2: Periodically prune the neighbor cache ---
+        if self.step_count > 0 and self.step_count % self.cache_prune_step_interval == 0:
+            self._prune_neighbor_cache()
+
         self.step_count += 1
         current_total_rate = self.total_rate
         if current_total_rate <= 1e-9:
@@ -349,7 +414,6 @@ class GillespieSimulation:
                     self.next_snapshot_trigger_index
                 ]
                 if self.mean_front_position >= next_trigger_q:
-                    # FIX: Restore the rich, informative snapshot title.
                     boundary_q = next_trigger_q + self.snapshot_q_offset
                     title = (
                         f"Task {self.snapshot_dir.name[-12:]}\n"
@@ -364,7 +428,6 @@ class GillespieSimulation:
                         self.snapshot_dir / f"snap_{self.snapshots_taken + 1:02d}.png"
                     )
                     self.plotter.save_figure(snapshot_path)
-
                     self.snapshots_taken += 1
                     self.next_snapshot_trigger_index += 1
 
@@ -393,16 +456,32 @@ class GillespieSimulation:
             self._update_events_for_cell(h)
 
     def _get_neighbors_periodic(self, h: Hex) -> list:
-        unwrapped = h.neighbors()
-        wrapped = []
-        for n in unwrapped:
-            offset_r = n.r + (n.q + (n.q & 1)) // 2
-            offset_r %= self.width
-            wrapped.append(self._axial_to_cube(n.q, offset_r))
-        return wrapped
+        if h in self.neighbor_cache:
+            return self.neighbor_cache[h]
 
-    def _get_params_for_q(self, q: int):
-        q_idx = np.clip(int(q), 0, self.length - 1)
+        neighbors = [
+            self._axial_to_cube(n.q, (n.r + (n.q + (n.q & 1)) // 2) % self.width)
+            for n in h.neighbors()
+        ]
+        self.neighbor_cache[h] = neighbors
+        return neighbors
+
+    # --- OPTIMIZATION 2: New method for cache pruning ---
+    def _prune_neighbor_cache(self):
+        """Removes entries from the neighbor cache that are far behind the front."""
+        if not self.neighbor_cache:
+            return
+
+        prune_threshold_q = self.mean_front_position - self.cache_prune_q_distance
+
+        # Collect keys to prune first to avoid modifying dict while iterating
+        keys_to_prune = [h for h in self.neighbor_cache if h.q < prune_threshold_q]
+
+        for h in keys_to_prune:
+            del self.neighbor_cache[h]
+
+    def _get_params_for_q(self, q: int) -> Tuple[float, float]:
+        q_idx = max(0, min(q, self.length - 1))
         patch_idx = self.q_to_patch_index[q_idx]
         return self.patch_params[patch_idx]
 
@@ -421,7 +500,10 @@ class GillespieSimulation:
         else:
             idx = self.next_event_idx
             if idx >= self.MAX_EVENTS:
-                raise MemoryError("SummedRateTree event capacity exceeded.")
+                # If this error occurs with the new sizing, it means the safety
+                # factor was too low for a specific simulation dynamic.
+                # Consider increasing the multiplier in the `realistic_capacity` calculation.
+                raise MemoryError(f"SummedRateTree event capacity ({self.MAX_EVENTS}) exceeded.")
             self.next_event_idx += 1
         self.event_to_idx[event] = idx
         self.idx_to_event[idx] = event

@@ -1,4 +1,6 @@
-# FILE: manage.py (Definitive Final Version with Typer Fix)
+# FILE: manage.py (Data-Centric Version)
+# This script is a data-centric tool for managing simulation campaigns.
+# All plotting is handled by standalone scripts in the 'scripts/paper_figures' directory.
 
 import json
 import math
@@ -23,64 +25,12 @@ from scripts.utils.generate_tasks import generate_tasks_for_experiment
 
 app = typer.Typer(
     name="reflux-manager",
-    help="A unified CLI to manage Reflux simulation campaigns.",
+    help="A data-centric CLI to manage Reflux simulation campaigns.",
     add_completion=False,
     no_args_is_help=True,
 )
 
 VALID_EXP_NAMES = list(EXPERIMENTS.keys())
-
-FIG_MAP = {
-    # --- Main Manuscript Figures ---
-    "fig1": (
-        "scripts/paper_figures/fig1_boundary_analysis.py",
-        ["fig1_boundary_analysis", "fig1_kpz_scaling"],
-    ),
-    "fig2": (
-        "scripts/paper_figures/fig2_keystone_analysis.py",
-        ["fig2_phase_diagram", "fig3_bet_hedging_final"],
-    ),
-    "fig3": (
-        "scripts/paper_figures/fig3_adaptation_analysis.py",
-        ["fig5_asymmetric_patches", "fig3_bet_hedging_final"],
-    ),
-    "fig4": (
-        "scripts/paper_figures/fig4_recovery_analysis.py",
-        ["fig4_recovery_timescale"],
-    ),
-    # --- Supplementary & Exploratory Figures ---
-    "sup_fig_phase_diagram": (
-        "scripts/paper_figures/sup_fig_phase_diagram.py",
-        ["fig2_phase_diagram"],
-    ),
-    "sup_fig_susceptibility": (
-        "scripts/paper_figures/sup_fig_susceptibility_analysis.py",
-        ["fig2_phase_diagram"],
-    ),
-    "sup_fig_homogeneous_cost": (
-        "scripts/paper_figures/sup_fig_homogeneous_cost.py",
-        ["sup_homogeneous_cost"],
-    ),
-    "sup_fig_asymmetric_details": (
-        "scripts/paper_figures/sup_fig_asymmetric_details.py",
-        ["fig5_asymmetric_patches", "fig3_bet_hedging_final"],
-    ),
-    "sup_fig_relaxation_ts": (
-        "scripts/paper_figures/sup_fig_relaxation_ts.py",
-        ["fig4_relaxation"],
-    ),
-    "sup_fig_relaxation_analysis": (
-        "scripts/paper_figures/sup_fig_relaxation_analysis.py",
-        ["fig4_recovery_timescale"],
-    ),
-    "sup_fig_optimal_heatmap": (
-        "scripts/paper_figures/sup_fig_optimal_strategy_heatmap.py",
-        ["fig3_bet_hedging_final"],
-    ),
-}
-
-
-VALID_FIG_NAMES = list(FIG_MAP.keys())
 
 
 class SbatchSubmissionError(Exception):
@@ -182,6 +132,7 @@ def launch(
 
 @app.command()
 def status(experiment_name: Optional[str] = typer.Argument(None)):
+    """Checks the completion status of an experiment's data."""
     if not experiment_name:
         experiment_name = _interactive_select(VALID_EXP_NAMES)
     if experiment_name not in VALID_EXP_NAMES:
@@ -209,15 +160,12 @@ def status(experiment_name: Optional[str] = typer.Argument(None)):
             fg=typer.colors.YELLOW,
         )
         raise typer.Exit()
-    if raw_dir.exists() and (
-        any(raw_dir.glob("chunk_*.jsonl")) or any(raw_dir.glob("*.json"))
-    ):
+    if raw_dir.exists() and any(raw_dir.iterdir()):
         typer.secho("\n[!] Found unconsolidated raw data.", fg=typer.colors.YELLOW)
         typer.echo(
-            "      Run consolidation and wait for it to finish before checking status."
+            "      Run consolidation to update the status."
         )
         typer.secho(f"      python3 manage.py consolidate {campaign_id}", bold=True)
-        raise typer.Exit()
     completed_ids = set()
     if summary_file.exists():
         try:
@@ -254,6 +202,7 @@ def consolidate(
         None, help="Campaign ID to consolidate, e.g., 'fig2_phase_diagram'"
     )
 ):
+    """Consolidates raw JSONL/JSON data into a final summary CSV."""
     if not campaign_id:
         typer.echo("Please choose a campaign to consolidate:")
         all_campaigns = sorted(
@@ -261,9 +210,7 @@ def consolidate(
         )
         campaign_id = _interactive_select(all_campaigns)
     raw_dir = PROJECT_ROOT / "data" / campaign_id / "raw"
-    if not raw_dir.exists() or not (
-        any(raw_dir.glob("chunk_*.jsonl")) or any(raw_dir.glob("*.json"))
-    ):
+    if not raw_dir.exists() or not any(raw_dir.iterdir()):
         typer.secho(
             f"No raw data found for '{campaign_id}'. Nothing to consolidate.",
             fg=typer.colors.GREEN,
@@ -276,49 +223,14 @@ def consolidate(
     )
 
 
-@app.command(name="plot")
-def plot_figure(figure_name: Optional[str] = typer.Argument(None)):
-    if not figure_name:
-        figure_name = _interactive_select(VALID_FIG_NAMES + ["all"])
-    figures_to_run = VALID_FIG_NAMES if figure_name == "all" else [figure_name]
-    for fig in figures_to_run:
-        if fig not in FIG_MAP:
-            continue
-        script_path, campaigns = FIG_MAP[fig]
-        typer.secho(f"\n--- Generating {fig} ---", fg=typer.colors.BLUE, bold=True)
-        for campaign in campaigns:
-            _consolidate_and_ensure_file_exists(campaign)
-        cmd = [sys.executable, str(PROJECT_ROOT / script_path)] + campaigns
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            typer.secho(
-                f"Error generating {fig}. Plotting script failed.", fg=typer.colors.RED
-            )
-            typer.secho(
-                "--- STDERR from plotting script ---\n"
-                + (result.stderr or "No stderr output."),
-                bold=True,
-            )
-            raise typer.Exit(1)
-    typer.secho("\n✅ All requested figures generated.", fg=typer.colors.GREEN)
-
-
 def _submit_sbatch_job(job_name, hpc_params, array_range, task_file, raw_data_dir):
     log_dir = PROJECT_ROOT / "slurm_logs"
     log_dir.mkdir(exist_ok=True)
     sbatch_cmd = [
-        "sbatch",
-        "--parsable",
-        "--job-name",
-        job_name,
-        "--array",
-        array_range,
-        "--output",
-        str(log_dir / f"{job_name}_%A_%a.log"),
-        "--mem",
-        hpc_params.get("mem", "2G"),
-        "--time",
-        hpc_params.get("time", "01:00:00"),
+        "sbatch", "--parsable", "--job-name", job_name, "--array", array_range,
+        "--output", str(log_dir / f"{job_name}_%A_%a.log"),
+        "--mem", hpc_params.get("mem", "2G"),
+        "--time", hpc_params.get("time", "01:00:00"),
     ]
     if hpc_params.get("partition"):
         sbatch_cmd.extend(["--partition", hpc_params["partition"]])
@@ -326,19 +238,12 @@ def _submit_sbatch_job(job_name, hpc_params, array_range, task_file, raw_data_di
         sbatch_cmd.extend(["--ntasks", str(hpc_params["ntasks"])])
     if hpc_params.get("cpus_per_task"):
         sbatch_cmd.extend(["--cpus-per-task", str(hpc_params["cpus_per_task"])])
-    sbatch_cmd.extend(
-        [
-            str(PROJECT_ROOT / "scripts" / "run_chunk.sh"),
-            str(PROJECT_ROOT),
-            str(log_dir),
-            str(task_file),
-            str(raw_data_dir),
-            str(hpc_params.get("sims_per_task", 50)),
-        ]
-    )
-
+    sbatch_cmd.extend([
+        str(PROJECT_ROOT / "scripts" / "run_chunk.sh"), str(PROJECT_ROOT),
+        str(log_dir), str(task_file), str(raw_data_dir),
+        str(hpc_params.get("sims_per_task", 50)),
+    ])
     result = subprocess.run(sbatch_cmd, capture_output=True, text=True)
-
     if result.returncode != 0:
         typer.secho(
             f"sbatch command failed for batch '{job_name}':\n{result.stderr}",
@@ -354,37 +259,49 @@ def _submit_sbatch_job(job_name, hpc_params, array_range, task_file, raw_data_di
 
 @app.command()
 def clean(experiment_name: Optional[str] = typer.Argument(None)):
+    """Deletes all data and logs for a given experiment."""
     if not experiment_name:
         experiment_name = _interactive_select(VALID_EXP_NAMES)
     if experiment_name not in VALID_EXP_NAMES:
         typer.secho(f"Error: Invalid experiment name.", fg=typer.colors.RED)
         raise typer.Exit(1)
     campaign_id = EXPERIMENTS[experiment_name]["campaign_id"]
-    data_dir, log_dir_campaign = (
-        PROJECT_ROOT / "data" / campaign_id,
-        PROJECT_ROOT / "slurm_logs" / campaign_id,
-    )
+    data_dir = PROJECT_ROOT / "data" / campaign_id
+    log_dir = PROJECT_ROOT / "slurm_logs"
+
     typer.secho(
-        f"This will DELETE data and logs for '{campaign_id}':",
-        fg=typer.colors.RED,
-        bold=True,
+        f"This will DELETE ALL data for '{campaign_id}' and matching logs:",
+        fg=typer.colors.RED, bold=True
     )
-    if not typer.confirm("\nAre you absolutely sure?"):
+    if data_dir.exists():
+        typer.echo(f"  - {data_dir}")
+
+    # Find logs associated with this campaign
+    logs_to_delete = list(log_dir.glob(f"{campaign_id}*.log"))
+    for log_file in logs_to_delete:
+        typer.echo(f"  - {log_file}")
+        
+    if not typer.confirm("\nAre you absolutely sure? This cannot be undone."):
         raise typer.Abort()
+        
     if data_dir.exists():
         shutil.rmtree(data_dir)
-        typer.echo(f"Removed {data_dir}")
-    if log_dir_campaign.exists():
-        shutil.rmtree(log_dir_campaign)
-        typer.echo(f"Removed {log_dir_campaign}")
+        typer.echo(f"Removed data directory.")
+        
+    for log_file in logs_to_delete:
+        log_file.unlink()
+    if logs_to_delete:
+        typer.echo(f"Removed {len(logs_to_delete)} log file(s).")
+        
     typer.secho("✨ Cleanup complete.", fg=typer.colors.GREEN)
 
 
 @app.command()
 def debug(
     experiment_name: Optional[str] = typer.Argument(None),
-    line: Optional[int] = typer.Option(None, "--line", "-l"),
+    line: Optional[int] = typer.Option(None, "--line", "-l", help="Line number from the master task list to run."),
 ):
+    """Runs a single task from an experiment locally for debugging."""
     if not experiment_name:
         experiment_name = _interactive_select(VALID_EXP_NAMES)
     if not line:
@@ -394,61 +311,58 @@ def debug(
         PROJECT_ROOT / "data" / campaign_id / f"{campaign_id}_master_tasks.jsonl"
     )
     if not master_task_file.exists():
+        typer.echo("Master task file not found. Generating it now...")
         _update_master_task_list(experiment_name)
+        
     try:
         with open(master_task_file) as f:
             params_json = f.readlines()[line - 1]
     except IndexError:
-        typer.secho(f"Error: Line {line} is out of bounds.", fg=typer.colors.RED)
+        typer.secho(f"Error: Line {line} is out of bounds for the task list.", fg=typer.colors.RED)
         raise typer.Exit(1)
-    params, task_id = json.loads(params_json), json.loads(params_json)["task_id"]
+        
+    params = json.loads(params_json)
+    task_id = params["task_id"]
     typer.secho(f"--- 🕵️  Debugging Task {task_id} (Line {line}) ---", bold=True)
     typer.echo(json.dumps(params, indent=2))
+    
     output_dir = PROJECT_ROOT / "data" / campaign_id / "raw"
     output_dir.mkdir(exist_ok=True)
+    
     worker_script = str(PROJECT_ROOT / "src" / "worker.py")
     cmd = [
-        sys.executable,
-        worker_script,
-        "--params",
-        params_json,
-        "--output-dir",
-        str(output_dir),
+        sys.executable, worker_script, "--params", params_json, "--output-dir", str(output_dir),
     ]
     env = os.environ.copy()
     env["PROJECT_ROOT"] = str(PROJECT_ROOT)
+    
     typer.echo("\n--- Running Worker ---")
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    
     if proc.returncode == 0:
         try:
-            result_data, final_output_path = (
-                json.loads(proc.stdout),
-                output_dir / f"{task_id}.json",
-            )
+            result_data = json.loads(proc.stdout)
+            final_output_path = output_dir / f"task_{task_id}.json"
             with open(final_output_path, "w") as f:
                 json.dump(result_data, f, indent=2)
             typer.secho("\n✅ Success", fg=typer.colors.GREEN)
             typer.echo(f"Output file created: {final_output_path}")
         except json.JSONDecodeError:
-            typer.secho(
-                "\n❌ FAILED: Worker output was not valid JSON.", fg=typer.colors.RED
-            )
+            typer.secho("\n❌ FAILED: Worker output was not valid JSON.", fg=typer.colors.RED)
+            typer.echo(proc.stdout)
     else:
         typer.secho(f"\n❌ FAILED", fg=typer.colors.RED)
-        typer.secho(
-            "--- Worker STDERR ---\n" + (proc.stderr or "No stderr output."), bold=True
-        )
+        typer.secho("--- Worker STDERR ---\n" + (proc.stderr or "No stderr output."), bold=True)
 
 
 def _update_master_task_list(experiment_name: str) -> int:
     config, campaign_id = (
-        EXPERIMENTS[experiment_name],
-        EXPERIMENTS[experiment_name]["campaign_id"],
+        EXPERIMENTS[experiment_name], EXPERIMENTS[experiment_name]["campaign_id"],
     )
     data_dir = PROJECT_ROOT / "data" / campaign_id
     data_dir.mkdir(parents=True, exist_ok=True)
     master_task_file = data_dir / f"{campaign_id}_master_tasks.jsonl"
-    desired_tasks, desired_task_map = generate_tasks_for_experiment(experiment_name), {}
+    desired_tasks = generate_tasks_for_experiment(experiment_name)
     desired_task_map = {t["task_id"]: t for t in desired_tasks}
     existing_task_ids = set()
     if master_task_file.exists():
@@ -473,84 +387,66 @@ def _consolidate_and_ensure_file_exists(campaign_id: str):
     raw_dir, analysis_dir = campaign_dir / "raw", campaign_dir / "analysis"
     analysis_dir.mkdir(parents=True, exist_ok=True)
     summary_file = analysis_dir / f"{campaign_id}_summary_aggregated.csv"
-    raw_chunk_files = list(raw_dir.glob("chunk_*.jsonl"))
-    raw_debug_files = list(raw_dir.glob("*.json"))
-    all_raw_files = raw_chunk_files + raw_debug_files
+    
+    all_raw_files = list(raw_dir.glob("chunk_*.jsonl")) + list(raw_dir.glob("task_*.json"))
+    
     if not all_raw_files:
         if not summary_file.exists():
             pd.DataFrame().to_csv(summary_file, index=False)
         return
+
     typer.secho(f"Consolidating summary data for: {campaign_id}", fg=typer.colors.BLUE)
     new_results = []
-    for raw_file in tqdm(all_raw_files, desc=f"Reading raw files for {campaign_id}"):
+    
+    for raw_file in tqdm(all_raw_files, desc=f"Reading raw files"):
         with open(raw_file, "r") as f:
             if raw_file.suffix == ".jsonl":
                 for line in f:
                     try:
                         data = json.loads(line)
-                        if "error" not in data:
-                            new_results.append(data)
-                    except json.JSONDecodeError:
-                        continue
+                        if "error" not in data: new_results.append(data)
+                    except json.JSONDecodeError: continue
             elif raw_file.suffix == ".json":
                 try:
                     data = json.load(f)
-                    if "error" not in data:
-                        new_results.append(data)
-                except json.JSONDecodeError:
-                    continue
-    if not new_results:
-        for raw_file in all_raw_files:
-            raw_file.unlink()
-        if not summary_file.exists():
-            pd.DataFrame().to_csv(summary_file, index=False)
-        return
-    new_df = pd.DataFrame(new_results)
-    if summary_file.exists():
-        try:
-            existing_df = pd.read_csv(summary_file, low_memory=False)
-            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-        except pd.errors.EmptyDataError:
+                    if "error" not in data: new_results.append(data)
+                except json.JSONDecodeError: continue
+
+    if not new_results and not summary_file.exists():
+        pd.DataFrame().to_csv(summary_file, index=False)
+    
+    if new_results:
+        new_df = pd.DataFrame(new_results)
+        if summary_file.exists():
+            try:
+                existing_df = pd.read_csv(summary_file, low_memory=False)
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            except pd.errors.EmptyDataError:
+                combined_df = new_df
+        else:
             combined_df = new_df
-    else:
-        combined_df = new_df
-    final_df = combined_df.drop_duplicates(subset=["task_id"], keep="last")
-    final_df.to_csv(summary_file, index=False)
-    typer.secho(
-        f"Updated summary: {len(final_df)} total unique results.", fg=typer.colors.GREEN
-    )
+        final_df = combined_df.drop_duplicates(subset=["task_id"], keep="last")
+        final_df.to_csv(summary_file, index=False)
+        typer.secho(f"Updated summary: {len(final_df)} total unique results.", fg=typer.colors.GREEN)
+        
     typer.echo("Cleaning up raw summary files...")
     for raw_file in all_raw_files:
         raw_file.unlink()
+
     for data_type in ["timeseries", "trajectories"]:
-        raw_data_dir, final_data_dir = (
-            campaign_dir / f"{data_type}_raw",
-            campaign_dir / data_type,
-        )
+        # This logic is for HPC workers that write to a temp dir first.
+        # It's good practice to keep it.
+        raw_data_dir = campaign_dir / f"{data_type}_raw"
+        final_data_dir = campaign_dir / data_type
         if raw_data_dir.exists():
             raw_files = list(raw_data_dir.glob("*.json.gz"))
             if raw_files:
-                typer.secho(
-                    f"Moving {len(raw_files)} new {data_type} files...",
-                    fg=typer.colors.BLUE,
-                )
+                typer.secho(f"Moving {len(raw_files)} new {data_type} files...", fg=typer.colors.BLUE)
                 final_data_dir.mkdir(exist_ok=True)
                 for f in tqdm(raw_files, desc=f"Moving {data_type} data"):
                     shutil.move(str(f), str(final_data_dir / f.name))
-                try:
-                    os.rmdir(raw_data_dir)
-                except OSError:
-                    pass
-
-
-def _is_job_running(job_name_prefix: str) -> bool:
-    cmd = ["squeue", "-u", os.environ.get("USER"), "-h", "-o", "%j"]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    running_jobs = result.stdout.strip().split("\n")
-    for job in running_jobs:
-        if job.strip().startswith(job_name_prefix):
-            return True
-    return False
+                try: os.rmdir(raw_data_dir)
+                except OSError: pass
 
 
 def _interactive_select(options: list) -> str:

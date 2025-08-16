@@ -1,4 +1,4 @@
-# FILE: src/core/metrics.py (Corrected and Renamed)
+# FILE: src/core/metrics.py (Corrected)
 
 import numpy as np
 import pandas as pd
@@ -7,6 +7,8 @@ from collections import deque
 
 if TYPE_CHECKING:
     from src.core.model import GillespieSimulation
+# This import is now needed to resolve the env_definition string
+from src.config import PARAM_GRID
 
 
 class MetricTracker:
@@ -557,7 +559,13 @@ class FrontConvergenceTracker(MetricTracker):
         if self.duration_unit == "cycles":
             env_map = kwargs.get("environment_map", {})
             patch_width = kwargs.get("patch_width", 0)
+            
+            # --- THIS IS THE FIX for Problem 1 ---
             env_def = kwargs.get("env_definition", {})
+            # Resolve the env_def if it's a string key
+            if isinstance(env_def, str):
+                env_def = PARAM_GRID.get("env_definitions", {}).get(env_def, {})
+            # --- END FIX ---
 
             cycle_q = 0.0
             if patch_width > 0 and env_map:

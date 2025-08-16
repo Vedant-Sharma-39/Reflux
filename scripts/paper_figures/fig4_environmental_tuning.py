@@ -1,6 +1,7 @@
 # FILE: scripts/paper_figures/fig4_environmental_tuning.py
-# Generates Figure 4. This definitive version correctly infers the patch width
-# by handling cases where the `env_definition` column is empty in the source data.
+# Generates Figure 4, showing how the optimal switching rate tunes to the
+# environmental timescale (patch width) in a periodic environment.
+# This version uses the consolidated 'bet_hedging_final' experiment.
 
 import os
 import sys
@@ -31,38 +32,42 @@ def main():
         sys.path.insert(0, project_root)
     from src.config import EXPERIMENTS, PARAM_GRID
 
-    main_campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
-    controls_campaign_id = EXPERIMENTS["bet_hedging_controls"]["campaign_id"]
-    campaign_ids = [main_campaign_id, controls_campaign_id]
-
-    dfs = []
-    for cid in campaign_ids:
-        summary_path = os.path.join(
-            project_root, "data", cid, "analysis", f"{cid}_summary_aggregated.csv"
+    try:
+        # --- NEW: Target the single, consolidated experiment ---
+        campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
+    except KeyError as e:
+        print(
+            f"Error: Required experiment key 'bet_hedging_final' not found in src/config.py.",
+            file=sys.stderr,
         )
-        if os.path.exists(summary_path):
-            print(f"Loading data from: {summary_path}")
-            dfs.append(pd.read_csv(summary_path))
-        else:
-            print(
-                f"Warning: Could not find summary file at {summary_path}",
-                file=sys.stderr,
-            )
-
-    if not dfs:
-        print("Error: No data files found. Cannot generate plot.", file=sys.stderr)
         sys.exit(1)
 
-    df = pd.concat(dfs, ignore_index=True)
+    # --- NEW: Simplified data loading ---
+    summary_path = os.path.join(
+        project_root,
+        "data",
+        campaign_id,
+        "analysis",
+        f"{campaign_id}_summary_aggregated.csv",
+    )
+    if not os.path.exists(summary_path):
+        print(
+            f"Error: Data file not found for campaign '{campaign_id}'. Run 'make consolidate CAMPAIGN={campaign_id}'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f"Loading data from: {summary_path}")
+    df = pd.read_csv(summary_path)
 
     figure_dir = os.path.join(project_root, "figures")
     os.makedirs(figure_dir, exist_ok=True)
     output_path = os.path.join(figure_dir, "fig4_environmental_tuning.png")
 
-    print(f"\nGenerating Figure 4 from campaigns: {campaign_ids}")
+    print(f"\nGenerating Figure 4 from campaign: {campaign_id}")
 
-    df_filtered = df[df["termination_reason"] != "stalled_or_boundary_hit"].copy()
-
+    # Filter for successful runs and the specific biological scenario
+    df_filtered = df[df["termination_reason"] == "converged"].copy()
     bm_target = 0.5
     phi_target = 0.0
     bm_val = find_nearest(df_filtered["b_m"].unique(), bm_target)
@@ -74,35 +79,23 @@ def main():
         & (df_filtered["k_total"] > 0)
     ].copy()
 
-    # --- DEFINITIVE FIX: Engineer 'patch_width' using a robust two-step process ---
-    # Step 1: Attempt to map from the `env_definition` column. This will work for the
-    # `fig3_controls` data but will produce `NaN` for `fig3_bet_hedging_final` data
-    # because that column is blank in its CSV.
+    # --- NEW: Robustly extract patch width from env_definition names ---
     env_name_map = {
-        PARAM_GRID["env_definitions"]["symmetric_strong_scan_bm_30w"]["name"]: 30,
-        PARAM_GRID["env_definitions"]["symmetric_strong_scan_bm_60w"]["name"]: 60,
-        PARAM_GRID["env_definitions"]["symmetric_strong_scan_bm_120w"]["name"]: 120,
+        "symmetric_refuge_30w": 30,
+        "symmetric_refuge_60w": 60,
+        "symmetric_refuge_120w": 120,
     }
     df_plot_data["patch_width"] = df_plot_data["env_definition"].map(env_name_map)
-
-    # Step 2: Fill in the missing values. We know any row from the main campaign
-    # that is missing a patch_width must be the 60px environment.
-    is_main_exp = df_plot_data["campaign_id"] == main_campaign_id
-    df_plot_data.loc[is_main_exp, "patch_width"] = df_plot_data.loc[
-        is_main_exp, "patch_width"
-    ].fillna(60)
-
-    # Now, drop any rows that are still missing a patch_width (none should remain)
     df_plot_data.dropna(subset=["patch_width"], inplace=True)
     df_plot_data["patch_width"] = df_plot_data["patch_width"].astype(int)
 
     patch_widths = np.sort(df_plot_data["patch_width"].unique())
-    if len(patch_widths) == 0:
+    if len(patch_widths) < 2:  # Need at least two different widths for this analysis
         print(
-            "\nFATAL ERROR: No data found for the required patch widths after filtering.",
+            "\nFATAL ERROR: Not enough patch width variation found in the data after filtering.",
             file=sys.stderr,
         )
-        print("This indicates a problem with the data loading or filtering logic.")
+        print(f"Found patch widths: {patch_widths}. Expected 30, 60, 120.")
         sys.exit(1)
 
     # --- Plotting Setup ---
@@ -110,7 +103,7 @@ def main():
     fig = plt.figure(figsize=(22, 7), constrained_layout=True)
     gs = fig.add_gridspec(1, 4)
     fig.suptitle(
-        f"Figure 4: Optimal Strategy is Tuned to Environmental Fluctuation Timescale\n($b_m={bm_val:.2f}, \\phi={phi_val:.2f}$)",
+        f"Figure 4: Optimal Strategy is Tuned to Environmental Fluctuation Timescale\n(Fixed params: $b_m={bm_val:.2f}, \\phi={phi_val:.2f}$)",
         fontsize=28,
         y=1.08,
     )
