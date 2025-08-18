@@ -1,4 +1,4 @@
-# FILE: src/core/hex_utils.py (With Moving Window Viewport)
+# FILE: src/core/hex_utils.py (Simple, "Plot Everything" Version)
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
@@ -67,8 +67,6 @@ class HexPlotter:
         self,
         population: Dict[Hex, int],
         title: str = "",
-        wt_front: Optional[Set[Hex]] = None,
-        m_front: Optional[Set[Hex]] = None,
         q_to_patch_index: Optional[np.ndarray] = None,
     ):
         self.ax.clear()
@@ -76,75 +74,64 @@ class HexPlotter:
         if not population:
             return
 
-        # --- NEW: Moving Window Logic ---
-        # Define the width of our "camera" view in terms of hex columns (q-coordinates)
-        view_width = 250 
-        
-        # Find the furthest point of the population front
-        max_q = max(h.q for h in population.keys()) if population else 0
-        
-        # Define the visible window based on the front
-        q_min_view = max(0, max_q - view_width)
-        q_max_view = max_q
+        # --- SIMPLE LOGIC: PLOT EVERYTHING ---
+        all_hexes = list(population.keys())
 
-        # Filter the population to only include cells within our moving window
-        visible_population = {
-            h: cell_type
-            for h, cell_type in population.items()
-            if q_min_view <= h.q <= q_max_view
-        }
-        
-        if not visible_population:
-             # If the window is empty for some reason, abort plotting
-            return
-            
-        # All subsequent operations will use the filtered 'visible_population'
-        all_hexes = list(visible_population.keys())
-        # --- END NEW ---
-        
         all_coords = np.array([self._axial_to_cartesian(h) for h in all_hexes])
         min_x, max_x = all_coords[:, 0].min(), all_coords[:, 0].max()
         min_y, max_y = all_coords[:, 1].min(), all_coords[:, 1].max()
 
+        # --- Drawing Logic (largely unchanged) ---
         if q_to_patch_index is not None:
             patch_colors = {0: "#fdf6e3", 1: "#f4eeda"}
             boundary_q_indices = np.where(np.diff(q_to_patch_index) != 0)[0]
-            
-            # Draw background colors (this part is fine as is)
+
             regions = np.split(q_to_patch_index, boundary_q_indices + 1)
             q_starts = [0] + (boundary_q_indices + 1).tolist()
             y_padding = self.size * 2
             for i, region in enumerate(regions):
                 patch_id = region[0]
                 q_start, q_end = q_starts[i], q_starts[i] + len(region)
-                x_start, _ = self._axial_to_cartesian(Hex(q_start - 0.5, 0, -(q_start - 0.5)))
+                x_start, _ = self._axial_to_cartesian(
+                    Hex(q_start - 0.5, 0, -(q_start - 0.5))
+                )
                 x_end, _ = self._axial_to_cartesian(Hex(q_end - 0.5, 0, -(q_end - 0.5)))
                 rect = plt.Rectangle(
-                    (x_start, min_y - y_padding), x_end - x_start,
+                    (x_start, min_y - y_padding),
+                    x_end - x_start,
                     (max_y - min_y) + 2 * y_padding,
-                    facecolor=patch_colors.get(patch_id, "#fdf6e3"), edgecolor="none", zorder=0
+                    facecolor=patch_colors.get(patch_id, "#fdf6e3"),
+                    edgecolor="none",
+                    zorder=0,
                 )
                 self.ax.add_patch(rect)
 
-            # Draw boundary lines (this part is fine as is)
             for boundary_q in boundary_q_indices:
                 q_midpoint = boundary_q + 0.5
-                boundary_x, _ = self._axial_to_cartesian(Hex(q_midpoint, 0, -q_midpoint))
+                boundary_x, _ = self._axial_to_cartesian(
+                    Hex(q_midpoint, 0, -q_midpoint)
+                )
                 self.ax.axvline(
-                    x=boundary_x, color="black", linestyle=(0, (5, 10)),
-                    linewidth=0.75, alpha=0.6, zorder=0.5
+                    x=boundary_x,
+                    color="black",
+                    linestyle=(0, (5, 10)),
+                    linewidth=0.75,
+                    alpha=0.6,
+                    zorder=0.5,
                 )
 
         patch_majority_type = {0: 1, 1: 2}
         majority_patches, majority_colors = [], []
         minority_patches, minority_colors = [], []
 
-        # IMPORTANT: Iterate over the filtered 'visible_population'
-        for h, cell_type in visible_population.items():
+        for h, cell_type in population.items():
             if cell_type == 0:
                 continue
             patch_idx = (
-                q_to_patch_index[int(h.q)] if q_to_patch_index is not None and 0 <= int(h.q) < len(q_to_patch_index) else 0
+                q_to_patch_index[int(h.q)]
+                if q_to_patch_index is not None
+                and 0 <= int(h.q) < len(q_to_patch_index)
+                else 0
             )
             center_x, center_y = self._axial_to_cartesian(h)
             corners = self._get_hex_corners(center_x, center_y)
@@ -156,20 +143,30 @@ class HexPlotter:
                 minority_patches.append(Polygon(corners, closed=True))
                 minority_colors.append(color)
 
-        majority_edge_colors = [(r * 0.7, g * 0.7, b * 0.7, a) for r, g, b, a in plt.cm.colors.to_rgba_array(majority_colors)]
+        majority_edge_colors = [
+            (r * 0.7, g * 0.7, b * 0.7, a)
+            for r, g, b, a in plt.cm.colors.to_rgba_array(majority_colors)
+        ]
         self.ax.add_collection(
             PatchCollection(
-                majority_patches, facecolors=majority_colors,
-                edgecolors=majority_edge_colors, lw=1.0, zorder=1
+                majority_patches,
+                facecolors=majority_colors,
+                edgecolors=majority_edge_colors,
+                lw=1.0,
+                zorder=1,
             )
         )
         self.ax.add_collection(
             PatchCollection(
-                minority_patches, facecolors=minority_colors,
-                edgecolors=self.fig.get_facecolor(), lw=1.5, zorder=2
+                minority_patches,
+                facecolors=minority_colors,
+                edgecolors=self.fig.get_facecolor(),
+                lw=1.5,
+                zorder=2,
             )
         )
-        
+
+        # --- Axis and Figure Sizing ---
         self.ax.set_aspect("equal", "box")
         width_range, height_range = max_x - min_x, max_y - min_y
         if width_range > 0 and height_range > 0:
@@ -193,8 +190,11 @@ class HexPlotter:
     def save_figure(self, filename: str, dpi: int = 150):
         if self.fig:
             self.fig.savefig(
-                filename, dpi=dpi, bbox_inches="tight",
-                pad_inches=0.1, facecolor=self.fig.get_facecolor()
+                filename,
+                dpi=dpi,
+                bbox_inches="tight",
+                pad_inches=0.1,
+                facecolor=self.fig.get_facecolor(),
             )
 
     def close(self):

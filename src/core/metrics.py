@@ -30,7 +30,71 @@ class MetricTracker:
         return {}
 
 
-# --- RENAMED CLASS and UPDATED DOCSTRING ---
+class InvasionOutcomeTracker(MetricTracker):
+    """
+    A purpose-built, efficient tracker for invasion probability experiments.
+    - Stops immediately upon true fixation or extinction.
+    - Implements an intelligent timeout to terminate long-running, failed invasions early.
+    - Does not record bulky trajectory data, only the final outcome.
+    """
+
+    def __init__(
+        self,
+        sim: "GillespieSimulation",
+        progress_threshold_frac: float = 0.25,
+        progress_check_time: float = 20000.0,
+        **kwargs,
+    ):
+        super().__init__(sim=sim, **kwargs)
+        # The width the mutant sector must reach to be considered a "successful" invasion
+        self.progress_threshold_width = sim.width * progress_threshold_frac
+        # The time limit by which this progress must be made
+        self.progress_check_time = progress_check_time
+
+        self._outcome: Optional[str] = None
+        self._time_to_outcome: Optional[float] = None
+        self._is_done = False
+
+    def is_done(self) -> bool:
+        return self._is_done
+
+    def after_step_hook(self):
+        # 1. Check for the two definitive, absorbing-state outcomes first
+        current_width = self.sim.mutant_sector_width
+        if current_width == 0:
+            self._outcome = "extinction"
+            self._time_to_outcome = self.sim.time
+            self._is_done = True
+            return
+
+        if current_width >= self.sim.width:
+            self._outcome = "fixation"
+            self._time_to_outcome = self.sim.time
+            self._is_done = True
+            return
+
+        # 2. Check for the intelligent "failed invasion" timeout
+        if self.sim.time > self.progress_check_time:
+            if current_width < self.progress_threshold_width:
+                # The patch failed to establish itself after a very long time.
+                # We classify this as an effective extinction to save compute time.
+                self._outcome = "extinction_by_timeout"
+                self._time_to_outcome = self.sim.time
+                self._is_done = True
+                return
+
+    def finalize(self) -> Dict[str, Any]:
+        # 3. Handle the case where the simulation was stopped by an external limit
+        if self._outcome is None:
+            self._outcome = "undecided_timeout"
+            self._time_to_outcome = self.sim.time
+
+        return {
+            "outcome": self._outcome,
+            "time_to_outcome": self._time_to_outcome,
+        }
+
+
 class BoundaryDynamicsTracker(MetricTracker):
     """
     For 'boundary_analysis' (calibration) runs. Tracks the boundary between
@@ -42,14 +106,17 @@ class BoundaryDynamicsTracker(MetricTracker):
         super().__init__(sim, **kwargs)
         self.trajectory: List[Tuple[float, float]] = []
         self.started = False
-        self._is_done = False
+        self._is_done = False  # This flag is TRUE only on true fixation/extinction
         self.result: Dict[str, Any] = {}
 
     def after_step_hook(self):
+        # This part is fine, it just records the trajectory
         current_width = self.sim.mutant_sector_width
         self.trajectory.append((self.sim.time, current_width))
         if not self.started:
             self.started = True
+
+        # This part correctly identifies a true outcome and stops the simulation
         if current_width == 0:
             self.result["outcome"] = "extinction"
             self.result["time_to_outcome"] = self.sim.time
@@ -60,12 +127,69 @@ class BoundaryDynamicsTracker(MetricTracker):
             self._is_done = True
 
     def is_done(self) -> bool:
+        # The tracker signals to the main loop to stop once an outcome is reached
         return self.started and self._is_done
 
     def finalize(self) -> dict:
+
+        if not self._is_done:
+            self.result["outcome"] = "undecided_timeout"
+            self.result["time_to_outcome"] = self.sim.time
+
         final_data = {"trajectory": self.trajectory}
         final_data.update(self.result)
+        final_data["num_fragments"] = self.sim.initial_num_fragments
+
         return final_data
+
+
+class FixationTimeTracker(MetricTracker):
+    """
+    For experiments that should terminate upon mutant fixation or extinction.
+
+    This tracker monitors the composition of the expanding front. It signals
+    completion as soon as the front contains only one cell type (WT or Mutant).
+    It records the outcome, the time it occurred, and the max front position reached.
+    If the boundary is hit before an outcome is decided, it records that instead.
+    """
+
+    def __init__(self, sim: "GillespieSimulation", **kwargs):
+        super().__init__(sim, **kwargs)
+        self._is_done = False
+        self.result: Dict[str, Any] = {}
+        self.outcome_recorded = False
+
+    def is_done(self) -> bool:
+        return self._is_done
+
+    def after_step_hook(self):
+        # Prevent re-recording if the simulation continues for other reasons
+        if self.outcome_recorded:
+            return
+
+        front_has_wt = len(self.sim.wt_front_cells) > 0
+        front_has_m = len(self.sim.m_front_cells) > 0
+
+        # Check for fixation or extinction at the front
+        if not (front_has_wt and front_has_m) and self.sim.step_count > 0:
+            if front_has_m:
+                self.result["outcome"] = "fixation"
+            else:  # front_has_wt or both are empty
+                self.result["outcome"] = "extinction"
+
+            self.result["time_to_outcome"] = self.sim.time
+            self.result["q_at_outcome"] = self.sim.mean_front_position
+            self._is_done = True
+            self.outcome_recorded = True
+
+    def finalize(self) -> Dict[str, Any]:
+        # If the loop finished due to boundary hit before fixation/extinction
+        if not self.outcome_recorded:
+            self.result["outcome"] = "boundary_hit"
+            self.result["time_to_outcome"] = self.sim.time
+            self.result["q_at_outcome"] = self.sim.mean_front_position
+
+        return self.result
 
 
 class RelaxationConvergenceTracker(MetricTracker):

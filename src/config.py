@@ -40,6 +40,9 @@ PARAM_GRID = {
     "phi_final_full": np.round(np.linspace(-1.0, 1.0, 9), 2).tolist(),
     "k_total_final_log": np.round(np.logspace(-2, 2, 20), 5).tolist(),
     "width_scan": [64, 128, 256, 512],
+    "correlation_length_scan": np.round(
+        np.logspace(0, 2.5, 10), 2
+    ).tolist(),  # from 1 to ~316
     # --- Environment Definitions ---
     "env_definitions": {
         # --- For Preserved `bet_hedging_final` Experiment ---
@@ -86,6 +89,29 @@ EXPERIMENTS = {
     # =========================================================================
     # === PRESERVED EXPERIMENTS (Matching Existing Data)
     # =========================================================================
+    "initial_distribution_selection": {
+        "campaign_id": "sup_fig_initial_distribution",
+        "run_mode": "calibration",  # Tracks fixation/extinction outcome
+        "hpc_params": {"time": "01:30:00", "sims_per_task": 100},
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 512,
+                    "length": 2048,  # Long enough for fixation/extinction
+                    "k_total": 0.0,  # No switching for this analysis
+                    "phi": 0.0,
+                    "num_replicates": 200,  # High N for good probability stats
+                    "initial_condition_type": "grf_threshold",
+                    "initial_mutant_patch_size": 128,  # Re-purposed as num_mutants
+                },
+                "grid_params": {
+                    "correlation_length": "correlation_length_scan",
+                    # Test both disadvantaged and advantaged mutants
+                    "b_m": [0.80, 1.05],
+                },
+            }
+        },
+    },
     "boundary_analysis": {
         "campaign_id": "fig1_boundary_analysis",
         "run_mode": "calibration",
@@ -179,24 +205,34 @@ EXPERIMENTS = {
     # =========================================================================
     "evolutionary_phase_diagram": {
         "campaign_id": "evolutionary_phase_diagram",
-        "run_mode": "bet_hedging_converged",
+        # --- SOLUTION STEP 1: Change the run_mode ---
+        # This tracker is designed for measuring steady-state speed after a warmup period,
+        # which is exactly what we need for a random environment.
+        "run_mode": "HomogeneousDynamicsTracker",
         "hpc_params": {"time": "12:00:00", "mem": "2G", "sims_per_task": 15},
         "sim_sets": {
             "main": {
+                # --- SOLUTION STEP 2: Replace base_params with the correct ones ---
                 "base_params": {
                     "width": 256,
                     "length": 16384,
                     "initial_condition_type": "mixed",
                     "num_replicates": 32,
-                    "max_cycles": 50,
-                    "convergence_window_cycles": 5,
-                    "convergence_threshold": 0.01,
+                    # Let the front travel for 4000 time units to stabilize.
+                    # This replaces the confusing 'max_cycles'.
+                    "warmup_time": 4000.0,
+                    # After warmup, take 200 measurements of speed.
+                    "num_samples": 200,
+                    # Take one measurement every 50 time units.
+                    "sample_interval": 50.0,
                 },
                 "grid_params": {
                     "k_total": "k_total_final_log",
                     "b_m": [0.5],
                     "phi": [0.0],
                     "env_definition": [
+                        # You can keep the periodic one as a control if you like.
+                        # The analysis script will correctly ignore it.
                         "symmetric_refuge_60w",
                         *_generate_gamma_environments(
                             means=[30, 60, 120, 240], fano_factors=[1, 10, 30, 60]
@@ -232,16 +268,21 @@ EXPERIMENTS = {
     },
     "invasion_probability_analysis": {
         "campaign_id": "invasion_probability",
-        "run_mode": "calibration",
-        "hpc_params": {"time": "01:00:00", "sims_per_task": 100},
+        # --- FIX 1: Use the new, purpose-built run mode ---
+        "run_mode": "invasion_outcome",
+        "hpc_params": {"time": "02:00:00", "sims_per_task": 100},
         "sim_sets": {
             "main": {
                 "base_params": {
                     "width": 256,
-                    "length": 1024,
+                    "length": 512,  # Length can be modest, we care about width
                     "num_replicates": 200,
                     "initial_condition_type": "patch",
                     "initial_mutant_patch_size": 4,
+                    # --- FIX 2: Add tracker-specific parameters ---
+                    # If patch isn't 25% of the width by t=20000, end the run.
+                    "progress_threshold_frac": 0.25,
+                    "progress_check_time": 20000.0,
                 },
                 "grid_params": {
                     "phi": [-1.0, 0.0, 0.5],
@@ -272,6 +313,22 @@ EXPERIMENTS = {
                     "k_total": 0.1,
                     "phi": 0.0,
                     "b_m": 0.5,
+                },
+            }
+        },
+    },
+    "debug_fragmentation_viz": {
+        "campaign_id": "debug_fragmentation_viz",
+        "run_mode": "visualization",  # This enables the plotter
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 128,  # Smaller width for a focused view
+                    "length": 1024,
+                    "k_total": 0.0,  # No switching
+                    "phi": 0.0,
+                    "b_m": 0.80,  # Disadvantaged case is most dramatic
+                    "initial_mutant_patch_size": 32,  # 25% mutants
                 },
             }
         },

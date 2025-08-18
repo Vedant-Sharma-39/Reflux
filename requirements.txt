@@ -1,7 +1,9 @@
-# FILE: requirements.txt
-pandas
-numpy
-matplotlib
-seaborn
-tqdm
-typer[all] # For a great CLI experience
+click==8.2.1+computecanada
+imageio==2.37.0+computecanada
+markdown-it-py==4.0.0
+mdurl==0.1.2+computecanada
+rich==14.1.0+computecanada
+seaborn==0.13.2+computecanada
+shellingham==1.5.4+computecanada
+tqdm==4.67.1+computecanada
+typer==0.16.0+computecanada

@@ -1,8 +1,10 @@
-# FILE: scripts/paper_figures/sup_fig_homogeneous_cost.py
+# FILE: scripts/paper_figures/plot_final_two_panel_synthesis.py
 #
-# Generates a supplementary figure to quantify the inherent fitness cost of
-# phenotypic switching in a stable, homogeneous environment where the
-# wild-type/generalist is always favored.
+# Generates the final, definitive two-panel synthesis figure.
+# Panel A shows the absolute fitness landscape in the fluctuating (w=60) environment,
+# establishing the concept of an optimal switching rate.
+# Panel B directly compares the relative fitness cost of selection in the stable
+# vs. the fluctuating environment for key strategic regimes.
 
 import os
 import sys
@@ -10,21 +12,19 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.lines import Line2D
 
 
 def get_project_root():
-    """Dynamically finds the project root directory."""
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    """Dynamically finds the project root directory and adds it to the path."""
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    return project_root
 
 
-# --- Add project root to path to allow importing from src ---
 PROJECT_ROOT = get_project_root()
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from src.config import EXPERIMENTS
-
-# Assuming you have a data_loader utility as per your structure
 from src.io.data_loader import load_aggregated_data
 
 
@@ -35,121 +35,155 @@ def find_nearest(array, value):
     return array[idx]
 
 
+def process_data_for_relative_fitness(df, env_name_filter=None):
+    """Helper function to calculate relative fitness, filtering for successful runs."""
+    valid_reasons = ["boundary_hit", "converged"]
+    df_successful = df[df["termination_reason"].isin(valid_reasons)].copy()
+    if df_successful.empty:
+        return pd.DataFrame()
+    df_filtered = df_successful[np.isclose(df_successful["phi"], 0.0)].copy()
+    if df_filtered.empty:
+        return pd.DataFrame()
+    df_filtered["s"] = df_filtered["b_m"] - 1.0
+    df_baseline = (
+        df_filtered[np.isclose(df_filtered["s"], 0.0)][["k_total", "avg_front_speed"]]
+        .groupby("k_total")
+        .mean()
+        .reset_index()
+    )
+    df_baseline = df_baseline.rename(columns={"avg_front_speed": "F_baseline"})
+    df_norm = pd.merge(df_filtered, df_baseline, on="k_total", how="left")
+    df_norm.dropna(subset=["F_baseline"], inplace=True)
+    df_norm["relative_fitness"] = df_norm["avg_front_speed"] / df_norm["F_baseline"]
+    return df_norm
+
+
 def main():
-    # --- 1. Data Loading ---
-    campaign_id = EXPERIMENTS["homogeneous_fitness_cost"]["campaign_id"]
-    print(f"Generating Homogeneous Fitness Cost figure from campaign: {campaign_id}")
-    df = load_aggregated_data(campaign_id, PROJECT_ROOT)
-
-    if df.empty:
-        print(
-            f"Error: Data for campaign '{campaign_id}' is empty or not found.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
+    # 1. --- Load Data ---
+    bh_campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
+    homo_campaign_id = EXPERIMENTS["homogeneous_fitness_cost"]["campaign_id"]
+    df_bh = load_aggregated_data(bh_campaign_id, PROJECT_ROOT)
+    df_homo = load_aggregated_data(homo_campaign_id, PROJECT_ROOT)
+    if df_bh.empty or df_homo.empty:
+        sys.exit("Error: Data for one or both campaigns is missing.")
+    df_bh.columns = df_bh.columns.str.strip()
+    df_homo.columns = df_homo.columns.str.strip()
     figure_dir = os.path.join(PROJECT_ROOT, "figures")
     os.makedirs(figure_dir, exist_ok=True)
-    output_path = os.path.join(figure_dir, "sup_fig_homogeneous_cost.png")
-
-    # --- 2. Data Processing and Filtering ---
-    # Use the definitive two-step filtering protocol
-    STALL_THRESHOLD = 0.20
-    stall_counts = df[df["termination_reason"] == "stalled_or_boundary_hit"][
-        "phi"
-    ].value_counts()
-    total_counts = df["phi"].value_counts()
-    stall_rates = stall_counts.div(total_counts, fill_value=0)
-    phi_to_exclude = stall_rates[stall_rates > STALL_THRESHOLD].index.tolist()
-
-    if phi_to_exclude:
-        df = df[~df["phi"].isin(phi_to_exclude)].copy()
-
-    df_filtered = df[df["termination_reason"] != "stalled_or_boundary_hit"].copy()
-    df_filtered["s"] = df_filtered["b_m"] - 1.0
-
-    # Select representative selection strengths for panels
-    s_all = np.sort(df_filtered["s"].unique())
-    s_targets = [-0.1, -0.8]
-    s_vals = [find_nearest(s_all, s) for s in s_targets]
-
-    # --- 3. Plotting ---
-    sns.set_theme(style="ticks", context="talk")
-    fig, axes = plt.subplots(1, 3, figsize=(21, 7), constrained_layout=True)
-    fig.suptitle(
-        "The Inherent Fitness Cost of Phenotypic Switching in a Stable Environment",
-        fontsize=24,
-        y=1.05,
+    output_path = os.path.join(
+        figure_dir, "fig5_interplay_of_switching_and_selection.png"
     )
 
-    # --- Panel A & B: Fitness vs. Switching Rate ---
-    panel_map = {
-        s_vals[0]: (axes[0], f"(A) Weak Selection (s = {s_vals[0]:.2f})"),
-        s_vals[1]: (axes[1], f"(B) Strong Selection (s = {s_vals[1]:.2f})"),
-    }
+    # 2. --- Process Data ---
+    # Data for Panel A
+    df_bh_abs = df_bh[
+        (df_bh["env_definition"] == "symmetric_refuge_60w")
+        & np.isclose(df_bh["phi"], 0.0)
+        & (df_bh["termination_reason"] == "converged")
+    ].copy()
 
-    for s_val, (ax, title) in panel_map.items():
-        df_panel = df_filtered[np.isclose(df_filtered["s"], s_val)]
+    # Data for Panel B
+    df_norm_homo = process_data_for_relative_fitness(df_homo)
+    df_norm_homo["Environment"] = "Stable"
+    df_norm_bh = process_data_for_relative_fitness(
+        df_bh, env_name_filter="symmetric_refuge_60w"
+    )
+    df_norm_bh["Environment"] = "Fluctuating"
+    df_combined = pd.concat([df_norm_homo, df_norm_bh])
 
-        # Plot a reference line for the non-switching wild-type (fitness should be ~1.0, b_wt)
-        ax.axhline(1.0, color="gray", linestyle="--", label="Non-Switching WT Fitness")
+    # 3. --- Define Regimes and Visual Styles ---
+    sns.set_theme(style="ticks", context="talk")
+    fig, axes = plt.subplots(1, 2, figsize=(28, 10))
+    fig.suptitle(
+        "The Bet-Hedging Trade-Off: Benefit in Fluctuating vs. Cost in Stable Environments",
+        fontsize=32,
+        y=1.03,
+    )
 
-        sns.lineplot(
-            data=df_panel,
-            x="k_total",
-            y="avg_front_speed",
-            hue="phi",
-            palette="coolwarm_r",  # Red (specialist bias) is bad, blue (generalist bias) is better
-            legend="full",
-            marker="o",
-            lw=2.5,
-            ax=ax,
+    k_all = np.sort(df_combined["k_total"].unique())
+    k_regimes_vals = [
+        find_nearest(k_all, 0.05),
+        find_nearest(k_all, 0.3),
+        find_nearest(k_all, 10.0),
+    ]
+    custom_palette = {"Slow": "#4B0082", "Optimal": "#008080", "Fast": "#FFA500"}
+
+    # --- Panel A: The Benefit ---
+    axA = axes[0]
+    s_all_bh = np.sort(df_bh_abs["b_m"].unique())
+    s_val_bh = find_nearest(s_all_bh, 0.5)
+    df_bh_abs_s_slice = df_bh_abs[np.isclose(df_bh_abs["b_m"], s_val_bh)]
+    sns.lineplot(
+        data=df_bh_abs_s_slice,
+        x="k_total",
+        y="avg_front_speed",
+        ax=axA,
+        color="black",
+        linewidth=4,
+        marker="o",
+        markersize=10,
+    )
+
+    for i, (regime_name, k_val) in enumerate(
+        zip(["Slow", "Optimal", "Fast"], k_regimes_vals)
+    ):
+        axA.axvline(
+            x=k_val, color=custom_palette[regime_name], linestyle="--", lw=3, alpha=0.8
         )
-        ax.set_xscale("log")
-        ax.set_title(title, fontsize=18)
-        ax.set_xlabel("Switching Rate, $k$", fontsize=16)
-        ax.set_ylabel("Long-Term Fitness", fontsize=16)
-        ax.grid(True, which="both", ls=":")
-        if ax.get_legend() is not None:
-            ax.get_legend().set_title(r"Bias, $\phi$")
 
-    # --- Panel C: Quantifying the Fitness Cost ---
-    axC = axes[2]
-    df_cost = df_filtered[df_filtered["k_total"] > 0].copy()
+    axA.set_title(
+        f"(A) Benefit: Optimal Strategy in a Fluctuating Environment (b$_m$={s_val_bh:.2f})",
+        fontsize=22,
+        pad=15,
+    )
+    axA.set(
+        xscale="log",
+        xlabel="Switching Rate, $k_{total}$",
+        ylabel="Absolute Fitness (Front Speed)",
+    )
+    axA.grid(True, which="both", linestyle=":")
 
-    # Baseline is the fitness of the non-switching WT (k=0, phi=any value)
-    # Theoretically, this fitness is 1.0. We use the simulated value for robustness.
-    df_k0 = df_filtered[df_filtered["k_total"] == 0]
-    if not df_k0.empty:
-        baseline_fitness = df_k0["avg_front_speed"].mean()
-    else:
-        baseline_fitness = 1.0  # Theoretical value
-
-    df_cost["fitness_cost"] = baseline_fitness - df_cost["avg_front_speed"]
+    # --- Panel B: The Cost ---
+    axB = axes[1]
+    df_plot = df_combined[df_combined["k_total"].isin(k_regimes_vals)]
+    df_plot["Regime"] = df_plot["k_total"].map(
+        {
+            k_regimes_vals[0]: "Slow",
+            k_regimes_vals[1]: "Optimal",
+            k_regimes_vals[2]: "Fast",
+        }
+    )
 
     sns.lineplot(
-        data=df_cost,
+        data=df_plot,
         x="s",
-        y="fitness_cost",
-        hue="k_total",
-        palette="crest",
-        legend="full",
-        marker="o",
-        lw=2.5,
-        ax=axC,
+        y="relative_fitness",
+        ax=axB,
+        hue="Regime",
+        hue_order=["Slow", "Optimal", "Fast"],
+        style="Environment",
+        style_order=["Stable", "Fluctuating"],
+        palette=custom_palette,
+        linewidth=4,
+        ci=95,
     )
 
-    axC.set_title("(C) Fitness Cost Increases with Selection Strength", fontsize=18)
-    axC.set_xlabel("Selection Strength, $s$", fontsize=16)
-    axC.set_ylabel(r"Fitness Cost ($\Delta F = F_{k=0} - F_k$)", fontsize=16)
-    axC.grid(True, ls=":")
-    axC.set_ylim(bottom=0)  # Cost cannot be negative
-    if axC.get_legend() is not None:
-        axC.get_legend().set_title(r"Switching Rate, $k$")
+    axB.axhline(1.0, color="red", lw=2.5, linestyle=":", zorder=0)
+    axB.set_title(
+        "(B) Cost: Selection Penalty in Stable vs. Fluctuating Environments",
+        fontsize=22,
+        pad=15,
+    )
+    axB.set(
+        xlabel="Selection Strength, $s = b_m - 1$",
+        ylabel="Relative Fitness (of viable fronts)",
+        ylim=(0.4, 1.1),
+    )
+    axB.grid(True, which="both", linestyle=":")
+    axB.legend(fontsize=16, title="Legend")
 
-    sns.despine(fig)
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"\nHomogeneous cost figure saved to: {output_path}")
+    print(f"Figure saved to: {output_path}")
 
 
 if __name__ == "__main__":
