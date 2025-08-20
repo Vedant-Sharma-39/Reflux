@@ -71,10 +71,10 @@ def main():
     try:
         exp_config = EXPERIMENTS["debug_bet_hedging"]
         params = exp_config["sim_sets"]["main"]["base_params"].copy()
-        
+
         # Override the environment with our selected one
         params["env_definition"] = selected_env_name
-        
+
         params["run_mode"] = exp_config["run_mode"]
         params["campaign_id"] = exp_config["campaign_id"]
     except KeyError as e:
@@ -109,7 +109,11 @@ def main():
         title = generate_debug_title(sim, 0, num_snapshots)
         snapshot_path = snapshot_dir / "snap_00.png"
         sim.plotter.plot_population(
-            sim.population, title=title, q_to_patch_index=sim.q_to_patch_index
+            sim.population,
+            sim.mean_front_position,
+            sim.width,
+            title=title,
+            q_to_patch_index=sim.q_to_patch_index,
         )
         sim.plotter.save_figure(snapshot_path)
 
@@ -121,7 +125,11 @@ def main():
                 title = generate_debug_title(sim, snap_num, num_snapshots)
                 snapshot_path = snapshot_dir / f"snap_{snap_num:02d}.png"
                 sim.plotter.plot_population(
-                    sim.population, title=title, q_to_patch_index=sim.q_to_patch_index
+                    sim.population,
+                    sim.mean_front_position,
+                    sim.width,
+                    title=title,
+                    q_to_patch_index=sim.q_to_patch_index,
                 )
                 sim.plotter.save_figure(snapshot_path)
             if not active or boundary_hit:

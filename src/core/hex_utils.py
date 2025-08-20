@@ -1,4 +1,4 @@
-# FILE: src/core/hex_utils.py (Simple, "Plot Everything" Version)
+# FILE: src/core/hex_utils.py (FIXED: Aesthetic Overhaul Version)
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
@@ -44,7 +44,8 @@ class HexPlotter:
         self.labels = labels
         self.colormap = {int(k): v for k, v in colormap.items()}
         self.fig, self.ax = plt.subplots()
-        self.fig.set_facecolor("#fdf6e3")
+        # --- AESTHETIC FIX 1: Use a clean white background ---
+        self.fig.set_facecolor("#FFFFFF")
 
     def _axial_to_cartesian(self, h: Hex) -> tuple[float, float]:
         """Converts axial hex coordinates to cartesian using a flat-top orientation."""
@@ -66,121 +67,141 @@ class HexPlotter:
     def plot_population(
         self,
         population: Dict[Hex, int],
+        mean_front_q: float,
+        sim_width: int,
         title: str = "",
         q_to_patch_index: Optional[np.ndarray] = None,
     ):
         self.ax.clear()
+        self.ax.set_facecolor(self.fig.get_facecolor())
+
+        q_int = int(mean_front_q)
+        r_offset_for_y_calc = (q_int + (q_int & 1)) // 2
+        r_top = 0 - r_offset_for_y_calc
+        r_bottom = (sim_width - 1) - r_offset_for_y_calc
+        _, min_y = self._axial_to_cartesian(Hex(q_int, r_top, -q_int - r_top))
+        _, max_y = self._axial_to_cartesian(Hex(q_int, r_bottom, -q_int - r_bottom))
 
         if not population:
-            return
+            self.ax.set_title(title, fontsize=18, pad=20, color="black", loc="left")
+        else:
+            if q_to_patch_index is not None:
+                # --- AESTHETIC FIX 2: Better background patch colors ---
+                patch_colors = {0: "#FFFFFF", 1: "#E0E0E0"}
+                boundary_q_indices = np.where(np.diff(q_to_patch_index) != 0)[0]
+                regions = np.split(q_to_patch_index, boundary_q_indices + 1)
+                q_starts = [0] + (boundary_q_indices + 1).tolist()
+                y_padding = self.size * 2
+                for i, region in enumerate(regions):
+                    patch_id = region[0]
+                    q_start, q_end = q_starts[i], q_starts[i] + len(region)
+                    x_start, _ = self._axial_to_cartesian(
+                        Hex(q_start - 0.5, 0, -q_start + 0.5)
+                    )
+                    x_end, _ = self._axial_to_cartesian(
+                        Hex(q_end - 0.5, 0, -q_end + 0.5)
+                    )
+                    rect = plt.Rectangle(
+                        (x_start, min_y - y_padding),
+                        x_end - x_start,
+                        (max_y - min_y) + 2 * y_padding,
+                        facecolor=patch_colors.get(patch_id, "#FFFFFF"),
+                        edgecolor="none",
+                        zorder=0,
+                    )
+                    self.ax.add_patch(rect)
+                for boundary_q in boundary_q_indices:
+                    q_midpoint = boundary_q + 0.5
+                    boundary_x, _ = self._axial_to_cartesian(
+                        Hex(q_midpoint, 0, -q_midpoint)
+                    )
+                    self.ax.axvline(
+                        x=boundary_x,
+                        color="gray",
+                        linestyle="--",
+                        linewidth=1.0,
+                        alpha=0.8,
+                        zorder=0.5,
+                    )
 
-        # --- SIMPLE LOGIC: PLOT EVERYTHING ---
-        all_hexes = list(population.keys())
+            patch_majority_type = {0: 1, 1: 2}
+            majority_patches, minority_patches = [], []
+            majority_colors, minority_colors = [], []
 
-        all_coords = np.array([self._axial_to_cartesian(h) for h in all_hexes])
-        min_x, max_x = all_coords[:, 0].min(), all_coords[:, 0].max()
-        min_y, max_y = all_coords[:, 1].min(), all_coords[:, 1].max()
-
-        # --- Drawing Logic (largely unchanged) ---
-        if q_to_patch_index is not None:
-            patch_colors = {0: "#fdf6e3", 1: "#f4eeda"}
-            boundary_q_indices = np.where(np.diff(q_to_patch_index) != 0)[0]
-
-            regions = np.split(q_to_patch_index, boundary_q_indices + 1)
-            q_starts = [0] + (boundary_q_indices + 1).tolist()
-            y_padding = self.size * 2
-            for i, region in enumerate(regions):
-                patch_id = region[0]
-                q_start, q_end = q_starts[i], q_starts[i] + len(region)
-                x_start, _ = self._axial_to_cartesian(
-                    Hex(q_start - 0.5, 0, -(q_start - 0.5))
+            for h, cell_type in population.items():
+                if cell_type == 0:
+                    continue
+                patch_idx = (
+                    q_to_patch_index[int(h.q)]
+                    if q_to_patch_index is not None
+                    and 0 <= int(h.q) < len(q_to_patch_index)
+                    else 0
                 )
-                x_end, _ = self._axial_to_cartesian(Hex(q_end - 0.5, 0, -(q_end - 0.5)))
-                rect = plt.Rectangle(
-                    (x_start, min_y - y_padding),
-                    x_end - x_start,
-                    (max_y - min_y) + 2 * y_padding,
-                    facecolor=patch_colors.get(patch_id, "#fdf6e3"),
-                    edgecolor="none",
-                    zorder=0,
-                )
-                self.ax.add_patch(rect)
+                center_x, center_y = self._axial_to_cartesian(h)
+                corners = self._get_hex_corners(center_x, center_y)
+                color = self.colormap.get(cell_type, "gray")
+                if cell_type == patch_majority_type.get(patch_idx, 1):
+                    majority_patches.append(Polygon(corners, closed=True))
+                    majority_colors.append(color)
+                else:
+                    minority_patches.append(Polygon(corners, closed=True))
+                    minority_colors.append(color)
 
-            for boundary_q in boundary_q_indices:
-                q_midpoint = boundary_q + 0.5
-                boundary_x, _ = self._axial_to_cartesian(
-                    Hex(q_midpoint, 0, -q_midpoint)
+            # Use a slightly darker shade for edges to create definition
+            majority_edge_colors = [
+                (r * 0.8, g * 0.8, b * 0.8, a)
+                for r, g, b, a in plt.cm.colors.to_rgba_array(majority_colors)
+            ]
+            self.ax.add_collection(
+                PatchCollection(
+                    majority_patches,
+                    facecolors=majority_colors,
+                    edgecolors=majority_edge_colors,
+                    lw=0.5,
+                    zorder=1,
                 )
-                self.ax.axvline(
-                    x=boundary_x,
-                    color="black",
-                    linestyle=(0, (5, 10)),
-                    linewidth=0.75,
-                    alpha=0.6,
-                    zorder=0.5,
-                )
-
-        patch_majority_type = {0: 1, 1: 2}
-        majority_patches, majority_colors = [], []
-        minority_patches, minority_colors = [], []
-
-        for h, cell_type in population.items():
-            if cell_type == 0:
-                continue
-            patch_idx = (
-                q_to_patch_index[int(h.q)]
-                if q_to_patch_index is not None
-                and 0 <= int(h.q) < len(q_to_patch_index)
-                else 0
             )
-            center_x, center_y = self._axial_to_cartesian(h)
-            corners = self._get_hex_corners(center_x, center_y)
-            color = self.colormap.get(cell_type, "gray")
-            if cell_type == patch_majority_type.get(patch_idx, 1):
-                majority_patches.append(Polygon(corners, closed=True))
-                majority_colors.append(color)
-            else:
-                minority_patches.append(Polygon(corners, closed=True))
-                minority_colors.append(color)
-
-        majority_edge_colors = [
-            (r * 0.7, g * 0.7, b * 0.7, a)
-            for r, g, b, a in plt.cm.colors.to_rgba_array(majority_colors)
-        ]
-        self.ax.add_collection(
-            PatchCollection(
-                majority_patches,
-                facecolors=majority_colors,
-                edgecolors=majority_edge_colors,
-                lw=1.0,
-                zorder=1,
+            self.ax.add_collection(
+                PatchCollection(
+                    minority_patches,
+                    facecolors=minority_colors,
+                    edgecolors="white",
+                    lw=1.0,
+                    zorder=2,
+                )
             )
+
+            # --- AESTHETIC FIX 3: Reduced font size ---
+            self.ax.set_title(title, fontsize=18, pad=20, color="black", loc="left")
+
+        # Set final view limits
+        q_window_width = 100.0
+        q_min_view = mean_front_q - q_window_width / 2
+        q_max_view = mean_front_q + q_window_width / 2
+        x_min_view, _ = self._axial_to_cartesian(
+            Hex(int(q_min_view), 0, -int(q_min_view))
         )
-        self.ax.add_collection(
-            PatchCollection(
-                minority_patches,
-                facecolors=minority_colors,
-                edgecolors=self.fig.get_facecolor(),
-                lw=1.5,
-                zorder=2,
-            )
+        x_max_view, _ = self._axial_to_cartesian(
+            Hex(int(q_max_view), 0, -int(q_max_view))
         )
 
-        # --- Axis and Figure Sizing ---
         self.ax.set_aspect("equal", "box")
-        width_range, height_range = max_x - min_x, max_y - min_y
-        if width_range > 0 and height_range > 0:
-            base_width_inches = 20
-            self.fig.set_size_inches(
-                base_width_inches,
-                base_width_inches * (height_range / width_range) * 1.1,
-            )
+        padding_y = self.size * 2
+        self.ax.set_xlim(x_min_view, x_max_view)
+        self.ax.set_ylim(min_y - padding_y, max_y + padding_y)
 
-        padding = self.size * 2
-        self.ax.set_xlim(min_x - padding, max_x + padding)
-        self.ax.set_ylim(min_y - padding, max_y + padding)
+        # --- AESTHETIC FIX 4: Re-engineered aspect ratio logic ---
+        view_width_cartesian = x_max_view - x_min_view
+        view_height_cartesian = (max_y - min_y) + 2 * padding_y
+        aspect_ratio = (
+            view_width_cartesian / view_height_cartesian
+            if view_height_cartesian > 0
+            else 1.0
+        )
+        base_height_inches = 16
+        self.fig.set_size_inches(base_height_inches * aspect_ratio, base_height_inches)
+        # --- END OF FIX ---
 
-        self.ax.set_title(title, fontsize=24, pad=30, color="#2d3436", loc="left")
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         for spine in self.ax.spines.values():

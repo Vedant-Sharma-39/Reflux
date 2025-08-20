@@ -89,29 +89,6 @@ EXPERIMENTS = {
     # =========================================================================
     # === PRESERVED EXPERIMENTS (Matching Existing Data)
     # =========================================================================
-    "initial_distribution_selection": {
-        "campaign_id": "sup_fig_initial_distribution",
-        "run_mode": "calibration",  # Tracks fixation/extinction outcome
-        "hpc_params": {"time": "01:30:00", "sims_per_task": 100},
-        "sim_sets": {
-            "main": {
-                "base_params": {
-                    "width": 512,
-                    "length": 2048,  # Long enough for fixation/extinction
-                    "k_total": 0.0,  # No switching for this analysis
-                    "phi": 0.0,
-                    "num_replicates": 200,  # High N for good probability stats
-                    "initial_condition_type": "grf_threshold",
-                    "initial_mutant_patch_size": 128,  # Re-purposed as num_mutants
-                },
-                "grid_params": {
-                    "correlation_length": "correlation_length_scan",
-                    # Test both disadvantaged and advantaged mutants
-                    "b_m": [0.80, 1.05],
-                },
-            }
-        },
-    },
     "boundary_analysis": {
         "campaign_id": "fig1_boundary_analysis",
         "run_mode": "calibration",
@@ -329,6 +306,30 @@ EXPERIMENTS = {
                     "phi": 0.0,
                     "b_m": 0.80,  # Disadvantaged case is most dramatic
                     "initial_mutant_patch_size": 32,  # 25% mutants
+                },
+            }
+        },
+    },
+    "deleterious_invasion_dynamics": {
+        "campaign_id": "deleterious_invasion_dynamics",
+        "run_mode": "fixation_analysis",
+        "hpc_params": {"time": "02:30:00", "sims_per_task": 100},
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 512,
+                    "length": 2048,
+                    "k_total": 0.0,
+                    "phi": 0.0,
+                    "num_replicates": 250,  # Increased for better stats
+                    "initial_condition_type": "grf_threshold",
+                },
+                "grid_params": {
+                    "correlation_length": "correlation_length_scan",
+                    # A finer grid of deleterious fitness values
+                    "b_m": [0.7, 0.8, 0.9, 0.95],
+                    # A wider range of initial mutant numbers (fractions)
+                    "initial_mutant_patch_size": [32, 64, 128, 256],
                 },
             }
         },

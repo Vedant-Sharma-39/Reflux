@@ -1,4 +1,4 @@
-# FILE: src/core/metrics.py (Corrected)
+# FILE: src/core/metrics.py (Corrected with Historical Max Q and num_fragments)
 
 import numpy as np
 import pandas as pd
@@ -158,36 +158,45 @@ class FixationTimeTracker(MetricTracker):
         self._is_done = False
         self.result: Dict[str, Any] = {}
         self.outcome_recorded = False
+        self.max_mutant_q_reached = 0.0
 
     def is_done(self) -> bool:
         return self._is_done
 
     def after_step_hook(self):
-        # Prevent re-recording if the simulation continues for other reasons
+        if self.sim.m_front_cells:
+            current_max_mutant_q = max(h.q for h in self.sim.m_front_cells)
+            self.max_mutant_q_reached = max(
+                self.max_mutant_q_reached, current_max_mutant_q
+            )
+
         if self.outcome_recorded:
             return
 
         front_has_wt = len(self.sim.wt_front_cells) > 0
         front_has_m = len(self.sim.m_front_cells) > 0
 
-        # Check for fixation or extinction at the front
         if not (front_has_wt and front_has_m) and self.sim.step_count > 0:
             if front_has_m:
                 self.result["outcome"] = "fixation"
-            else:  # front_has_wt or both are empty
+            else:
                 self.result["outcome"] = "extinction"
 
             self.result["time_to_outcome"] = self.sim.time
-            self.result["q_at_outcome"] = self.sim.mean_front_position
+            self.result["q_at_outcome"] = self.max_mutant_q_reached
             self._is_done = True
             self.outcome_recorded = True
 
     def finalize(self) -> Dict[str, Any]:
-        # If the loop finished due to boundary hit before fixation/extinction
         if not self.outcome_recorded:
             self.result["outcome"] = "boundary_hit"
             self.result["time_to_outcome"] = self.sim.time
-            self.result["q_at_outcome"] = self.sim.mean_front_position
+            self.result["q_at_outcome"] = self.max_mutant_q_reached
+
+        # --- THIS IS THE FIX ---
+        # Ensure 'num_fragments' is always included in the output.
+        self.result["num_fragments"] = self.sim.initial_num_fragments
+        # --- END OF FIX ---
 
         return self.result
 
@@ -228,31 +237,23 @@ class RelaxationConvergenceTracker(MetricTracker):
             self.rho_m_deque.append(current_rho_m)
             self.next_log_time += self.sample_interval
 
-            # --- EFFICIENCY AND ROBUSTNESS FIX ---
-            # Check for convergence only after the deque is full.
             if len(self.rho_m_deque) == self.convergence_window:
                 mean_rho = np.mean(self.rho_m_deque)
-                # Use relative standard deviation (coefficient of variation).
-                # This is robust to the scale of the mutant fraction.
-                # Only check if the mean is non-trivial to avoid division by zero.
                 if mean_rho > 1e-6:
                     relative_std_dev = np.std(self.rho_m_deque, ddof=1) / mean_rho
                     if relative_std_dev < self.convergence_threshold:
                         self._is_done = True
                         break
-                # If the mean is essentially zero, check absolute deviation.
                 else:
                     if np.std(self.rho_m_deque, ddof=1) < self.convergence_threshold:
                         self._is_done = True
                         break
-            # --- END FIX ---
 
     def finalize(self) -> Dict[str, Any]:
         return {"timeseries": self.history}
 
 
 class InterfaceRoughnessTracker(MetricTracker):
-    # ... (rest of the file is unchanged) ...
     """For 'diffusion' runs. Measures W², the squared roughness of the front."""
 
     def __init__(
@@ -683,7 +684,7 @@ class FrontConvergenceTracker(MetricTracker):
         if self.duration_unit == "cycles":
             env_map = kwargs.get("environment_map", {})
             patch_width = kwargs.get("patch_width", 0)
-            
+
             # --- THIS IS THE FIX for Problem 1 ---
             env_def = kwargs.get("env_definition", {})
             # Resolve the env_def if it's a string key

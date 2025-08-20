@@ -247,8 +247,9 @@ class GillespieSimulation:
     def _setup_visualization(self, **params):
         self.plotter: Optional[HexPlotter] = None
         if params.get("run_mode") == "visualization":
+            # --- AESTHETIC FIX: New high-contrast colormap ---
             self.plotter = HexPlotter(
-                hex_size=1.0, labels={}, colormap={1: "#02343F", 2: "#d35400"}
+                hex_size=1.0, labels={}, colormap={1: "#003f5c", 2: "#ff7c43"}
             )
             self.snapshot_dir = Path("figures/debug_runs") / params.get(
                 "campaign_id", "viz"
@@ -341,6 +342,8 @@ class GillespieSimulation:
             self._remove_event(event)
         if h in self._front_lookup:
             self._remove_from_front(h)
+            self.wt_front_cells.pop(h, None)
+            self.m_front_cells.pop(h, None)
         cell_type = self.population.get(h)
         if cell_type is None or cell_type == Empty:
             return
@@ -351,6 +354,10 @@ class GillespieSimulation:
         ]
         if empty_neighbors:
             self._add_to_front(h)
+            if cell_type == Wildtype:
+                self.wt_front_cells[h] = empty_neighbors
+            elif cell_type == Mutant:
+                self.m_front_cells[h] = empty_neighbors
             if cell_type == Wildtype and self.k_wt_m > 0:
                 self._add_event(("switch", h, Mutant), self.k_wt_m)
             elif cell_type == Mutant and self.k_m_wt > 0:
@@ -363,18 +370,24 @@ class GillespieSimulation:
 
     def _execute_event(self, event_type: str, parent: Hex, target: Optional[Hex]):
         if event_type == "grow":
-            self.population[target] = self.population[parent]
-            if self.population[target] == Mutant:
+            parent_type = self.population[parent]
+            self.population[target] = parent_type
+            if parent_type == Mutant:
                 self.mutant_cell_count += 1
+                self.mutant_r_counts[target.r] += 1
             self.total_cell_count += 1
             self._update_cell_and_neighbors(parent)
             self._update_cell_and_neighbors(target)
         elif event_type == "switch":
-            self.population[parent] = target
-            if target == Mutant:
+            old_type = self.population[parent]
+            new_type = target  # Here, target is the new cell type
+            self.population[parent] = new_type
+            if new_type == Mutant and old_type == Wildtype:
                 self.mutant_cell_count += 1
-            else:
+                self.mutant_r_counts[parent.r] += 1
+            elif new_type == Wildtype and old_type == Mutant:
                 self.mutant_cell_count -= 1
+                self.mutant_r_counts[parent.r] -= 1
             self._update_cell_and_neighbors(parent)
 
     def _update_cell_and_neighbors(self, h: Hex):
