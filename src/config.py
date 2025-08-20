@@ -9,8 +9,10 @@ import numpy as np
 def _generate_gamma_environments(means, fano_factors):
     """Generates a suite of Gamma-distributed environments programmatically."""
     env_dict = {}
+    # Base patches represent the two environmental states (e.g., S and G in the paper)
+    # Here, WT is favored in patch 0, Mutant in patch 1.
     base_patches = [
-        {"id": 0, "proportion": 0.5, "params": {"b_wt": 1.0}},
+        {"id": 0, "proportion": 0.5, "params": {"b_wt": 1.0, "b_m": 0.5}},
         {"id": 1, "proportion": 0.5, "params": {"b_wt": 0.0, "b_m": 1.0}},
     ]
 
@@ -19,14 +21,13 @@ def _generate_gamma_environments(means, fano_factors):
             name = f"gamma_mean_{mean}_fano_{fano}"
             env_dict[name] = {
                 "name": name,
-                "scrambled": True,
+                "scrambled": True,  # This flag triggers the new logic in the model
                 "patch_width_distribution": "gamma",
                 "mean_patch_width": mean,
                 "fano_factor": fano,
                 "patches": base_patches,
-                # --- THIS IS THE FIX ---
-                "cycle_length": 16384,  # Provide an effective cycle length for the tracker
-                # --- END FIX ---
+                # Provide an effective cycle length for compatibility with older trackers.
+                "cycle_length": 16384,
             }
     return env_dict
 
@@ -182,35 +183,31 @@ EXPERIMENTS = {
     # =========================================================================
     "evolutionary_phase_diagram": {
         "campaign_id": "evolutionary_phase_diagram",
-        # --- SOLUTION STEP 1: Change the run_mode ---
-        # This tracker is designed for measuring steady-state speed after a warmup period,
-        # which is exactly what we need for a random environment.
+        # --- STEP 3: Use the time-based tracker for accurate speed measurement ---
         "run_mode": "HomogeneousDynamicsTracker",
-        "hpc_params": {"time": "12:00:00", "mem": "2G", "sims_per_task": 15},
+        "hpc_params": {"time": "2:00:00", "mem": "2G", "sims_per_task": 15},
         "sim_sets": {
             "main": {
-                # --- SOLUTION STEP 2: Replace base_params with the correct ones ---
                 "base_params": {
                     "width": 256,
-                    "length": 16384,
+                    "length": 16384,  # A long domain to average over many patches
                     "initial_condition_type": "mixed",
                     "num_replicates": 32,
-                    # Let the front travel for 4000 time units to stabilize.
-                    # This replaces the confusing 'max_cycles'.
+                    # Let the front travel for a long time to stabilize in the random env.
                     "warmup_time": 4000.0,
-                    # After warmup, take 200 measurements of speed.
+                    # After warmup, take many speed measurements to get a good average.
                     "num_samples": 200,
-                    # Take one measurement every 50 time units.
                     "sample_interval": 50.0,
                 },
                 "grid_params": {
+                    # This will be one axis of our phase diagram
                     "k_total": "k_total_final_log",
-                    "b_m": [0.5],
+                    # Fix other parameters for now
+                    "b_m": [1.0],  # We set b_m in the env_def now
                     "phi": [0.0],
+                    # This is the other axis: scanning over environmental statistics
                     "env_definition": [
-                        # You can keep the periodic one as a control if you like.
-                        # The analysis script will correctly ignore it.
-                        "symmetric_refuge_60w",
+                        # Use the names of the environments we just generated
                         *_generate_gamma_environments(
                             means=[30, 60, 120, 240], fano_factors=[1, 10, 30, 60]
                         ).keys(),

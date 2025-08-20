@@ -133,6 +133,7 @@ class GillespieSimulation:
         env_def = kwargs.get("env_definition")
         if isinstance(env_def, str):
             env_def = PARAM_GRID.get("env_definitions", {}).get(env_def)
+
         self.patch_sequence = []
         if env_def and isinstance(env_def, dict):
             if env_def.get("scrambled"):
@@ -144,21 +145,29 @@ class GillespieSimulation:
                 dist = env_def.get("patch_width_distribution", "gamma")
                 mean_width = env_def.get("mean_patch_width", 60)
                 fano = env_def.get("fano_factor", 1)
-                scale, shape = fano, mean_width / fano
-                target_len = env_def.get("cycle_length", self.length)
+
+                # Parameterization for Gamma: shape = mean/scale, variance = shape*scale^2
+                # fano = var/mean = scale. So, scale = fano
+                scale = fano
+                shape = mean_width / fano if fano > 0 else 0
+
+                target_len = self.length + 500  # Generate a bit extra
                 total_len = 0
                 while total_len < target_len:
+                    # Draw a width from the specified distribution
                     width = (
                         int(np.random.gamma(shape, scale))
                         if dist == "gamma"
-                        else int(np.random.exponential(scale=mean_width))
+                        else int(mean_width)
                     )
-                    if width >= 1:
+                    if width >= 1:  # Only add patches of meaningful width
+                        # Draw a patch type based on its proportion
                         self.patch_sequence.append(
                             (np.random.choice(patch_types, p=proportions), width)
                         )
                         total_len += width
-            else:
+            # --- END OF NEW LOGIC BLOCK ---
+            else:  # Original logic for periodic environments
                 base_pattern = [
                     (p["id"], p["width"]) for p in env_def.get("patches", [])
                 ]
@@ -169,6 +178,7 @@ class GillespieSimulation:
                         while total_len < self.length:
                             self.patch_sequence.extend(base_pattern)
                             total_len += cycle_q
+
         self.q_to_patch_index = np.zeros(self.length, dtype=int)
         current_q = 0
         if self.patch_sequence:
@@ -179,11 +189,12 @@ class GillespieSimulation:
                 current_q = end
                 if current_q >= self.length:
                     break
+
         base_patches = (env_def or {}).get("patches", [{"id": 0, "params": {}}])
         param_map = {p["id"]: p.get("params", {}) for p in base_patches}
         patch_ids = sorted(list(set(self.q_to_patch_index)))
         self.patch_params = []
-        for i in range(max(patch_ids) + 1):
+        for i in range(max(patch_ids) + 1 if patch_ids else 1):
             params = param_map.get(i, {})
             self.patch_params.append(
                 (params.get("b_wt", 1.0), params.get("b_m", self.global_b_m))
