@@ -1,4 +1,4 @@
-# FILE: src/worker.py (Corrected for JSON Serialization)
+# FILE: src/worker.py (Updated with dynamic class selection)
 
 import argparse
 import gzip
@@ -20,6 +20,8 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.core.model import GillespieSimulation
+# --- NEW IMPORT ---
+from src.core.model_transient import GillespieTransientStateSimulation
 from src.core.metrics import (
     MetricsManager,
     MetricTracker,
@@ -117,14 +119,23 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
-    # (This function is unchanged)
+    # --- DYNAMICALLY CHOOSE THE SIMULATION CLASS ---
+    if params.get("switching_lag_duration", 0.0) > 0.0:
+        SimClass = GillespieTransientStateSimulation
+    else:
+        SimClass = GillespieSimulation
+    # --- END OF DYNAMIC CHOICE LOGIC ---
+
     run_mode = params.get("run_mode")
     if run_mode not in RUN_MODE_CONFIG:
         raise ValueError(f"Unknown run_mode: '{run_mode}'")
+    
     manager = MetricsManager(params)
     config = RUN_MODE_CONFIG[run_mode]
     manager.add_tracker(config["tracker_class"], config["tracker_params"])
-    sim = GillespieSimulation(**params)
+    
+    sim = SimClass(**params)
+    
     manager.register_simulation(sim)
     max_steps = params.get("max_steps", 50_000_000)
     max_time = params.get("max_run_time", float("inf"))

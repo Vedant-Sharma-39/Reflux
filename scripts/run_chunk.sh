@@ -22,7 +22,7 @@ cd "${PROJECT_ROOT}" || exit 1
 if [ -f /etc/profile/d/modules.sh ]; then
    source /etc/profile.d/modules.sh
 fi
-module purge >/dev/null 2>&1; module load scipy-stack/2024a
+module purge >/dev/null 2>&1; module load scipy-stack/2025a
 export PROJECT_ROOT
 
 # 3. MAIN LOGIC

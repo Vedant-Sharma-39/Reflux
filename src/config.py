@@ -1,7 +1,6 @@
-# FILE: src/config.py (Cleaned Version: Preserves Existing Data, Adds New Experiments)
+# FILE: src/config.py (Corrected)
 
 import numpy as np
-
 
 # =============================================================================
 # === DYNAMIC ENVIRONMENT GENERATION
@@ -44,6 +43,18 @@ PARAM_GRID = {
     "correlation_length_scan": np.round(
         np.logspace(0, 2.5, 10), 2
     ).tolist(),  # from 1 to ~316
+
+    # --- Focused Grids for Definitive Experiment ---
+    "k_total_focused_log": np.round(np.logspace(-2, 2, 25), 5).tolist(),
+    "bm_focused_scan": [1.0, 0.9, 0.5, 0.25],
+    "phi_focused_scan": [0.0, 0.5, -0.5],
+    "bm_definitive_scan": [1.0, 0.9, 0.7, 0.5, 0.2],
+    "switching_lag_duration_scan": np.round(np.logspace(-2, 2, 10), 5).tolist(),
+    "switching_lag_dense_scan": np.unique(np.round(np.concatenate([
+        np.logspace(-2, -0.5, 5),      # Sparse sampling of very low lags
+        np.logspace(-0.5, 1.3, 15),   # DENSE sampling of the critical region
+        np.logspace(1.3, 2, 5),        # Sparse sampling of high lags
+    ]), 5)).tolist(),
     # --- Environment Definitions ---
     "env_definitions": {
         # --- For Preserved `bet_hedging_final` Experiment ---
@@ -181,33 +192,158 @@ EXPERIMENTS = {
     # =========================================================================
     # === NEW EXPERIMENTS (For Future Data Generation)
     # =========================================================================
+    # --- NEW EXPERIMENT 1: Fitness Landscape for Transient Lag ---
+    "transient_lag_fitness_landscape": {
+        "campaign_id": "fig_transient_lag_landscape",
+        "run_mode": "bet_hedging_converged",
+        "hpc_params": {"time": "4:00:00", "mem": "2G", "sims_per_task": 15},
+        "sim_sets": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 16384,
+                    "initial_condition_type": "mixed",
+                    "num_replicates": 16,
+                    "max_cycles": 50,
+                    "convergence_window_cycles": 5,
+                    "convergence_threshold": 0.05,
+                },
+                "grid_params": {
+                    # X-AXIS: The overall rate of switching
+                    "k_total": "k_total_final_log",
+                    
+                    # PANELS: Different levels of mutant fitness cost
+                    "b_m": [0.9, 0.5, 0.2],
+                    
+                    # LINES: The duration of the transient "stuck" state
+                    "switching_lag_duration": "switching_lag_duration_scan",
+                    "phi": "phi_final_full", 
+
+                    "env_definition": [
+                        {
+                            "name": "symmetric_refuge_60w_transient_test",
+                            "patches": [
+                                {"id": 0, "width": 60, "params": {"b_wt": 1.0}},
+                                {"id": 1, "width": 60, "params": {"b_wt": 0.0, "b_m": 1.0}},
+                            ],
+                        },
+                    ],
+                },
+            }
+        },
+    },
+
+    # --- NEW EXPERIMENT 2: Environmental Interaction for Transient Lag ---
+"lag_vs_selection_definitive": {
+        "campaign_id": "fig_final_lag_vs_selection_definitive",
+        "run_mode": "bet_hedging_converged",
+        "hpc_params": {"time": "3:00:00", "mem": "2G", "sims_per_task": 50},
+        "sim_sets": {
+            "reversible_scan": {
+                "base_params": {
+                    "width": 256, "length": 16384, "initial_condition_type": "mixed",
+                    "num_replicates": 32, "max_cycles": 50,
+                    "convergence_window_cycles": 5, "convergence_threshold": 0.05,
+                },
+                "grid_params": {
+                    "k_total": "k_total_focused_log",
+                    # --- FIX 1: Use the more comprehensive b_m scan ---
+                    "b_m": "bm_focused_scan",
+                    "phi": "phi_focused_scan",
+                    "switching_lag_duration": "switching_lag_dense_scan",
+                    "env_definition": [
+                        "symmetric_refuge_30w",
+                        "symmetric_refuge_60w",
+                        "symmetric_refuge_120w",
+                    ],
+                },
+            },
+            "irreversible_baseline": {
+                "base_params": {
+                    "width": 256, "length": 16384, "initial_condition_type": "mixed",
+                    "num_replicates": 32, "max_cycles": 50,
+                    "convergence_window_cycles": 5, "convergence_threshold": 0.05,
+                    "phi": -1.0, "k_total": 0.0, "switching_lag_duration": 0.0,
+                },
+                "grid_params": {
+                    # --- This is already correct and matches FIX 1 ---
+                    "b_m": "bm_definitive_scan",
+                    "env_definition": [
+                        "symmetric_refuge_30w",
+                        "symmetric_refuge_60w",
+                        "symmetric_refuge_120w",
+                    ],
+                }
+            }
+        },
+    },
+        "inherent_cost_fitness": {
+        "campaign_id": "fig_inherent_cost_fitness",
+        "run_mode": "bet_hedging_converged",
+        "hpc_params": {"time": "10:00:00", "mem": "2G", "sims_per_task": 20},
+        "sim_sets": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 16384,
+                    "initial_condition_type": "mixed",
+                    "num_replicates": 16,
+                    "max_cycles": 50,
+                    "convergence_window_cycles": 5,
+                    "convergence_threshold": 0.01,
+                },
+                "grid_params": {
+                    "b_m": "bm_final_wide",
+                    "phi": "phi_final_full",
+                    "k_total": "k_total_final_log",
+                    "env_definition": [
+                        {
+                            "name": "inherent_cost_30w",
+                            "patches": [
+                                {"id": 0, "width": 30, "params": {"b_wt": 1.0}},
+                                {"id": 1, "width": 30, "params": {"b_wt": 0.0}},
+                            ],
+                        },
+                        {
+                            "name": "inherent_cost_60w",
+                            "patches": [
+                                {"id": 0, "width": 60, "params": {"b_wt": 1.0}},
+                                {"id": 1, "width": 60, "params": {"b_wt": 0.0}},
+                            ],
+                        },
+                        {
+                            "name": "inherent_cost_120w",
+                            "patches": [
+                                {"id": 0, "width": 120, "params": {"b_wt": 1.0}},
+                                {"id": 1, "width": 120, "params": {"b_wt": 0.0}},
+                            ],
+                        },
+                    ],
+                },
+            }
+        },
+    },
+
     "evolutionary_phase_diagram": {
         "campaign_id": "evolutionary_phase_diagram",
-        # --- STEP 3: Use the time-based tracker for accurate speed measurement ---
         "run_mode": "HomogeneousDynamicsTracker",
         "hpc_params": {"time": "2:00:00", "mem": "2G", "sims_per_task": 15},
         "sim_sets": {
             "main": {
                 "base_params": {
                     "width": 256,
-                    "length": 16384,  # A long domain to average over many patches
+                    "length": 16384,
                     "initial_condition_type": "mixed",
                     "num_replicates": 32,
-                    # Let the front travel for a long time to stabilize in the random env.
                     "warmup_time": 4000.0,
-                    # After warmup, take many speed measurements to get a good average.
                     "num_samples": 200,
                     "sample_interval": 50.0,
                 },
                 "grid_params": {
-                    # This will be one axis of our phase diagram
                     "k_total": "k_total_final_log",
-                    # Fix other parameters for now
-                    "b_m": [1.0],  # We set b_m in the env_def now
+                    "b_m": [1.0],
                     "phi": [0.0],
-                    # This is the other axis: scanning over environmental statistics
                     "env_definition": [
-                        # Use the names of the environments we just generated
                         *_generate_gamma_environments(
                             means=[30, 60, 120, 240], fano_factors=[1, 10, 30, 60]
                         ).keys(),
@@ -242,19 +378,16 @@ EXPERIMENTS = {
     },
     "invasion_probability_analysis": {
         "campaign_id": "invasion_probability",
-        # --- FIX 1: Use the new, purpose-built run mode ---
         "run_mode": "invasion_outcome",
         "hpc_params": {"time": "02:00:00", "sims_per_task": 100},
         "sim_sets": {
             "main": {
                 "base_params": {
                     "width": 256,
-                    "length": 512,  # Length can be modest, we care about width
+                    "length": 512,
                     "num_replicates": 200,
                     "initial_condition_type": "patch",
                     "initial_mutant_patch_size": 4,
-                    # --- FIX 2: Add tracker-specific parameters ---
-                    # If patch isn't 25% of the width by t=20000, end the run.
                     "progress_threshold_frac": 0.25,
                     "progress_check_time": 20000.0,
                 },
@@ -293,16 +426,16 @@ EXPERIMENTS = {
     },
     "debug_fragmentation_viz": {
         "campaign_id": "debug_fragmentation_viz",
-        "run_mode": "visualization",  # This enables the plotter
+        "run_mode": "visualization",
         "sim_sets": {
             "main": {
                 "base_params": {
-                    "width": 128,  # Smaller width for a focused view
+                    "width": 128,
                     "length": 1024,
-                    "k_total": 0.0,  # No switching
+                    "k_total": 0.0,
                     "phi": 0.0,
-                    "b_m": 0.80,  # Disadvantaged case is most dramatic
-                    "initial_mutant_patch_size": 32,  # 25% mutants
+                    "b_m": 0.80,
+                    "initial_mutant_patch_size": 32,
                 },
             }
         },
@@ -318,15 +451,62 @@ EXPERIMENTS = {
                     "length": 2048,
                     "k_total": 0.0,
                     "phi": 0.0,
-                    "num_replicates": 250,  # Increased for better stats
+                    "num_replicates": 250,
                     "initial_condition_type": "grf_threshold",
                 },
                 "grid_params": {
                     "correlation_length": "correlation_length_scan",
-                    # A finer grid of deleterious fitness values
                     "b_m": [0.7, 0.8, 0.9, 0.95],
-                    # A wider range of initial mutant numbers (fractions)
                     "initial_mutant_patch_size": [32, 64, 128, 256],
+                },
+            }
+        },
+    },
+    
+        "debug_microlag_viz": {
+        "campaign_id": "debug_microlag_viz",
+        "run_mode": "visualization", # This enables the plotter
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    # Use the same base setup as the other viz debug
+                    "width": 128,
+                    "length": 1024,
+                    "initial_condition_type": "patch",
+                    "initial_mutant_patch_size": 64,
+                    "env_definition": "debug_viz_refuge",
+                    "b_m": 0.5,
+                    "phi": 0.0,
+                    
+                    # --- CORE PARAMETERS FOR THIS TEST ---
+                    # Set a non-zero switching rate that will be "unlocked" later.
+                    # A slightly higher k makes the change more dramatic and visible.
+                    "k_total": 0.5,
+                    
+                    # Set a lag time that is long enough to see the initial "no-switching"
+                    # phase clearly, but not so long the simulation ends before it's over.
+                    "switching_arrest_time": 100.0,
+                },
+            }
+        },
+    },
+    "debug_transient_state_viz": {
+        "campaign_id": "debug_transient_state_viz",
+        "run_mode": "visualization",
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 128,
+                    "length": 1024,
+                    "initial_condition_type": "patch",
+                    "initial_mutant_patch_size": 64,
+                    "env_definition": "debug_viz_refuge",
+                    "b_m": 0.5,
+                    "phi": 0.0,
+                    # A high switching rate makes the transient states appear frequently.
+                    "k_total": 0.1,
+                    # The duration each cell will be "stuck" when it switches.
+                    "switching_lag_duration": 0.5,
                 },
             }
         },
