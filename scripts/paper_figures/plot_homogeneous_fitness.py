@@ -1,6 +1,6 @@
-# FILE: scripts/paper_figures/plot_final_two_panel_synthesis.py
+# FILE: scripts/paper_figures/plot_homogeneous_fitness.py
 #
-# Generates the final, definitive two-panel synthesis figure.
+# Generates the final, definitive two-panel synthesis figure (Figure 6).
 # Panel A shows the absolute fitness landscape in the fluctuating (w=60) environment,
 # establishing the concept of an optimal switching rate.
 # Panel B directly compares the relative fitness cost of selection in the stable
@@ -13,6 +13,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.lines import Line2D
+import matplotlib
+
+# --- Publication Settings ---
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
+
+
+def cm_to_inch(cm):
+    return cm / 2.54
+
+
+# --- End Publication Settings ---
 
 
 def get_project_root():
@@ -59,7 +71,6 @@ def process_data_for_relative_fitness(df, env_name_filter=None):
 
 
 def main():
-    # 1. --- Load Data ---
     bh_campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
     homo_campaign_id = EXPERIMENTS["homogeneous_fitness_cost"]["campaign_id"]
     df_bh = load_aggregated_data(bh_campaign_id, PROJECT_ROOT)
@@ -70,19 +81,20 @@ def main():
     df_homo.columns = df_homo.columns.str.strip()
     figure_dir = os.path.join(PROJECT_ROOT, "figures")
     os.makedirs(figure_dir, exist_ok=True)
-    output_path = os.path.join(
-        figure_dir, "fig5_interplay_of_switching_and_selection.png"
+
+    output_path_pdf = os.path.join(
+        figure_dir, "fig6_interplay_of_switching_and_selection.pdf"
+    )
+    output_path_eps = os.path.join(
+        figure_dir, "fig6_interplay_of_switching_and_selection.eps"
     )
 
-    # 2. --- Process Data ---
-    # Data for Panel A
     df_bh_abs = df_bh[
         (df_bh["env_definition"] == "symmetric_refuge_60w")
         & np.isclose(df_bh["phi"], 0.0)
         & (df_bh["termination_reason"] == "converged")
     ].copy()
 
-    # Data for Panel B
     df_norm_homo = process_data_for_relative_fitness(df_homo)
     df_norm_homo["Environment"] = "Stable"
     df_norm_bh = process_data_for_relative_fitness(
@@ -91,13 +103,10 @@ def main():
     df_norm_bh["Environment"] = "Fluctuating"
     df_combined = pd.concat([df_norm_homo, df_norm_bh])
 
-    # 3. --- Define Regimes and Visual Styles ---
-    sns.set_theme(style="ticks", context="talk")
-    fig, axes = plt.subplots(1, 2, figsize=(28, 10))
-    fig.suptitle(
-        "The Bet-Hedging Trade-Off: Benefit in Fluctuating vs. Cost in Stable Environments",
-        fontsize=32,
-        y=1.03,
+    sns.set_theme(style="ticks", context="paper")
+    # --- CHANGE: Removed suptitle, using constrained_layout for better spacing ---
+    fig, axes = plt.subplots(
+        1, 2, figsize=(cm_to_inch(17.8), cm_to_inch(8)), constrained_layout=True
     )
 
     k_all = np.sort(df_combined["k_total"].unique())
@@ -108,7 +117,6 @@ def main():
     ]
     custom_palette = {"Slow": "#4B0082", "Optimal": "#008080", "Fast": "#FFA500"}
 
-    # --- Panel A: The Benefit ---
     axA = axes[0]
     s_all_bh = np.sort(df_bh_abs["b_m"].unique())
     s_val_bh = find_nearest(s_all_bh, 0.5)
@@ -119,31 +127,28 @@ def main():
         y="avg_front_speed",
         ax=axA,
         color="black",
-        linewidth=4,
+        linewidth=2.5,
         marker="o",
-        markersize=10,
+        markersize=5,
     )
 
     for i, (regime_name, k_val) in enumerate(
         zip(["Slow", "Optimal", "Fast"], k_regimes_vals)
     ):
         axA.axvline(
-            x=k_val, color=custom_palette[regime_name], linestyle="--", lw=3, alpha=0.8
+            x=k_val, color=custom_palette[regime_name], linestyle="--", lw=2, alpha=0.8
         )
 
-    axA.set_title(
-        f"(A) Benefit: Optimal Strategy in a Fluctuating Environment (b$_m$={s_val_bh:.2f})",
-        fontsize=22,
-        pad=15,
-    )
+    axA.set_title(f"(A) Optimal Strategy in Fluctuating Environment", fontsize=10)
     axA.set(
-        xscale="log",
-        xlabel="Switching Rate, $k_{total}$",
-        ylabel="Absolute Fitness (Front Speed)",
+        xlabel="Switching Rate, $k_{total}$", ylabel="Absolute Fitness (Front Speed)"
     )
+    axA.xaxis.label.set_size(8)
+    axA.yaxis.label.set_size(8)
+    axA.tick_params(axis="both", labelsize=7)
     axA.grid(True, which="both", linestyle=":")
+    axA.set_xscale("log")
 
-    # --- Panel B: The Cost ---
     axB = axes[1]
     df_plot = df_combined[df_combined["k_total"].isin(k_regimes_vals)]
     df_plot["Regime"] = df_plot["k_total"].map(
@@ -164,26 +169,31 @@ def main():
         style="Environment",
         style_order=["Stable", "Fluctuating"],
         palette=custom_palette,
-        linewidth=4,
+        linewidth=2.5,
         ci=95,
+        markers=True,  # Use different markers for stable/fluctuating
+        markersize=6,
+        mec=None,
+        mew=0,
     )
 
-    axB.axhline(1.0, color="red", lw=2.5, linestyle=":", zorder=0)
-    axB.set_title(
-        "(B) Cost: Selection Penalty in Stable vs. Fluctuating Environments",
-        fontsize=22,
-        pad=15,
-    )
+    axB.axhline(1.0, color="red", lw=1.5, linestyle=":", zorder=0)
+    axB.set_title("(B) Cost of Strategy in Different Environments", fontsize=10)
     axB.set(
         xlabel="Selection Strength, $s = b_m - 1$",
         ylabel="Relative Fitness (of viable fronts)",
-        ylim=(0.4, 1.1),
+        ylim=(0.4, 1.05),
     )
+    axB.xaxis.label.set_size(8)
+    axB.yaxis.label.set_size(8)
+    axB.tick_params(axis="both", labelsize=7)
     axB.grid(True, which="both", linestyle=":")
-    axB.legend(fontsize=16, title="Legend")
+    legB = axB.legend(fontsize=7, title="Legend")
+    plt.setp(legB.get_title(), fontsize=8)
 
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    print(f"Figure saved to: {output_path}")
+    plt.savefig(output_path_pdf, bbox_inches="tight")
+    plt.savefig(output_path_eps, bbox_inches="tight")
+    print(f"Figure saved to: {output_path_pdf} and {output_path_eps}")
 
 
 if __name__ == "__main__":

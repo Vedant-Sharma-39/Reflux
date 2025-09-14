@@ -39,7 +39,10 @@ def _find_event_numba(tree, capacity, value):
 def _generate_grf_initial_condition(
     width: int, num_mutants: int, correlation_length: float
 ) -> np.ndarray:
-    """Generates a 1D binary pattern using the GRF + rank-thresholding method."""
+    """
+    Generates a 1D binary pattern using the GRF + rank-thresholding method.
+    Returns a pattern of 0s and 1s, where 1 indicates a mutant.
+    """
     if correlation_length <= 0:
         # For an effective correlation length of zero, the pattern is random.
         pattern = np.zeros(width, dtype=int)
@@ -59,7 +62,7 @@ def _generate_grf_initial_condition(
     grf = np.real(np.fft.ifft(field_freq))
     top_indices = np.argsort(grf)[-num_mutants:]
     pattern = np.zeros(width, dtype=int)
-    pattern[top_indices] = 1
+    pattern[top_indices] = 1  # 1 indicates the location of a mutant
     return pattern
 
 
@@ -146,28 +149,23 @@ class GillespieSimulation:
                 mean_width = env_def.get("mean_patch_width", 60)
                 fano = env_def.get("fano_factor", 1)
 
-                # Parameterization for Gamma: shape = mean/scale, variance = shape*scale^2
-                # fano = var/mean = scale. So, scale = fano
                 scale = fano
                 shape = mean_width / fano if fano > 0 else 0
 
-                target_len = self.length + 500  # Generate a bit extra
+                target_len = self.length + 500
                 total_len = 0
                 while total_len < target_len:
-                    # Draw a width from the specified distribution
                     width = (
                         int(np.random.gamma(shape, scale))
                         if dist == "gamma"
                         else int(mean_width)
                     )
-                    if width >= 1:  # Only add patches of meaningful width
-                        # Draw a patch type based on its proportion
+                    if width >= 1:
                         self.patch_sequence.append(
                             (np.random.choice(patch_types, p=proportions), width)
                         )
                         total_len += width
-            # --- END OF NEW LOGIC BLOCK ---
-            else:  # Original logic for periodic environments
+            else:
                 base_pattern = [
                     (p["id"], p["width"]) for p in env_def.get("patches", [])
                 ]
@@ -204,61 +202,60 @@ class GillespieSimulation:
         self, ic_type: str, patch_size: int
     ) -> Dict[Hex, int]:
         pop: Dict[Hex, int] = {}
-        # This will hold the 1D binary pattern before converting to Hex
-        initial_pattern = np.zeros(self.width, dtype=int)
-
         if ic_type == "single_cell":
-            # This part remains unchanged
+            # This case remains unchanged, starts with a single Wildtype cell.
             pop[Hex(0, 0, 0)] = Wildtype
             self.total_cell_count = 1
-            self.initial_num_fragments = 1  # Added for consistency
+            self.initial_num_fragments = 1
             return pop
 
-        elif ic_type == "mixed":
+        # BUG FIX: Initialize the pattern with Wildtype cells (1), not Empty cells (0).
+        initial_pattern = np.full(self.width, Wildtype, dtype=int)
+
+        if ic_type == "mixed":
+            # This logic was already correct as it uses the constants directly.
             initial_pattern = np.random.choice([Wildtype, Mutant], size=self.width)
 
         elif ic_type == "patch":
             start_idx = (self.width - patch_size) // 2
             end_idx = start_idx + patch_size
+            # BUG FIX: Place Mutant (2) cells into the Wildtype (1) background.
             initial_pattern[start_idx:end_idx] = Mutant
-            initial_pattern[:start_idx] = Wildtype
-            initial_pattern[end_idx:] = Wildtype
 
-        # --- NEW BLOCK TO ADD ---
         elif ic_type == "grf_threshold":
-            # Here, 'patch_size' is re-purposed as the fixed number of mutants.
             num_mutants = patch_size
             correlation_length = self.all_params.get("correlation_length", 1.0)
-            initial_pattern = _generate_grf_initial_condition(
+            # This function returns a 0/1 pattern where 1 indicates mutant location.
+            mutant_locations = _generate_grf_initial_condition(
                 self.width, num_mutants, correlation_length
             )
-        # --- END OF NEW BLOCK ---
+            # BUG FIX: Correctly place Mutant (2) cells based on the 0/1 pattern.
+            initial_pattern[mutant_locations == 1] = Mutant
 
-        else:  # Default to Wildtype
-            initial_pattern.fill(Wildtype)
-
-        # Convert the 1D pattern to the population dictionary
-        for i, cell_type_val in enumerate(initial_pattern):
-            # The pattern is 0/1 for WT/M, but the simulation uses 1/2
-            cell_type = Wildtype if cell_type_val == 0 else Mutant
-            h = self._axial_to_cube(0, i)
-            pop[h] = cell_type
-            if cell_type == Mutant:
-                self.mutant_cell_count += 1
-                self.mutant_r_counts[h.r] += 1
-            self.total_cell_count += 1
+        # For the 'Wildtype' default case, the array is already correctly filled.
 
         # Store the initial fragmentation as a metric
         self.initial_num_fragments = int(
             1 + np.sum(initial_pattern[1:] != initial_pattern[:-1])
         )
 
+        # REFACTOR: Simplified and corrected population dictionary creation.
+        # The initial_pattern now correctly contains Wildtype (1) and Mutant (2) values.
+        for i, cell_type in enumerate(initial_pattern):
+            h = self._axial_to_cube(0, i)
+            pop[h] = cell_type
+            if cell_type == Mutant:
+                self.mutant_cell_count += 1
+                # This count is recalculated in _find_initial_front, but initializing
+                # it here is fine for consistency.
+                self.mutant_r_counts[h.r] += 1
+            self.total_cell_count += 1
+
         return pop
 
     def _setup_visualization(self, **params):
         self.plotter: Optional[HexPlotter] = None
         if params.get("run_mode") == "visualization":
-            # --- AESTHETIC FIX: New high-contrast colormap ---
             self.plotter = HexPlotter(
                 hex_size=1.0, labels={}, colormap={1: "#003f5c", 2: "#ff7c43"}
             )
@@ -267,9 +264,6 @@ class GillespieSimulation:
             )
             self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-    # =========================================================================
-    # === RESTORED PROPERTIES FOR METRIC TRACKERS ===
-    # =========================================================================
     @property
     def total_rate(self) -> float:
         return self.tree.get_total_rate()
@@ -302,10 +296,7 @@ class GillespieSimulation:
 
     @property
     def mutant_sector_width(self) -> int:
-        # For this, we need to track mutant r-coordinates again.
         return len([r for r, count in self.mutant_r_counts.items() if count > 0])
-
-    # =========================================================================
 
     def _add_to_front(self, h: Hex):
         self._front_lookup.add(h)
@@ -409,7 +400,6 @@ class GillespieSimulation:
                 self._update_single_cell_events(neighbor)
 
     def _find_initial_front(self):
-        # We need to add back the mutant_r_counts for the mutant_sector_width property
         self.mutant_r_counts = Counter(
             h.r for h, type in self.population.items() if type == Mutant
         )

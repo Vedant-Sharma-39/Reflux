@@ -311,7 +311,7 @@ class SteadyStatePropertiesTracker(MetricTracker):
         if self.sim.time >= self.next_sample_time and not self.is_done():
             self.mutant_fraction_samples.append(self.sim.mutant_fraction)
             self.front_length_samples.append(self.sim.expanding_front_length)
-            self.domain_boundary_samples.append(self.sim.domain_boundary_length)
+            self.domain_boundary_samples.append(self.sim.expanding_front_length)
             self.next_sample_time += self.sample_interval
             self.samples_taken += 1
 

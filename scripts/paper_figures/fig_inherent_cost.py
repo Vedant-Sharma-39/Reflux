@@ -1,6 +1,7 @@
-# FILE: scripts/paper_figures/fig3_adaptation_analysis.py
-# Generates the definitive Figure 3 from the "bet_hedging_final" experiment,
-# specifically using the data for the 60px periodic environment.
+# FILE: scripts/paper_figures/fig_inherent_cost_analysis.py
+# Generates a figure analogous to Figure 3, but for the "inherent_cost_fitness"
+# experiment, analyzing the fitness landscape when mutants have a constant
+# fitness cost and the environment varies in hostility to the wild-type.
 
 import os
 import sys
@@ -8,18 +9,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import matplotlib
-
-# --- Publication Settings ---
-matplotlib.rcParams["pdf.fonttype"] = 42
-matplotlib.rcParams["ps.fonttype"] = 42
-
-
-def cm_to_inch(cm):
-    return cm / 2.54
-
-
-# --- End Publication Settings ---
 
 
 def get_project_root():
@@ -48,22 +37,17 @@ def plot_strategy_panel(ax, df_bm_slice, title):
         palette="coolwarm_r",
         legend="full",
         marker="o",
-        lw=2,
-        ms=5,
+        lw=3,
+        ms=8,
         ax=ax,
     )
     ax.set_xscale("log")
-    # --- CHANGE: Font sizes ---
-    ax.set_title(title, fontsize=10)
-    ax.set_xlabel("Switching Rate, $k$", fontsize=8)
-    ax.set_ylabel("Long-Term Fitness", fontsize=8)
+    ax.set_title(title, fontsize=20)
+    ax.set_xlabel("Switching Rate, $k$", fontsize=16)
+    ax.set_ylabel("Long-Term Fitness", fontsize=16)
     ax.grid(True, which="both", ls=":")
-    ax.tick_params(axis="both", which="major", labelsize=7)
     if ax.get_legend() is not None:
-        leg = ax.get_legend()
-        leg.set_title(r"Bias, $\phi$")
-        plt.setp(leg.get_title(), fontsize=8)
-        plt.setp(leg.get_texts(), fontsize=7)
+        ax.get_legend().set_title(r"Bias, $\phi$")
 
 
 def main():
@@ -73,14 +57,16 @@ def main():
     from src.config import EXPERIMENTS, PARAM_GRID
 
     try:
-        campaign_id = EXPERIMENTS["bet_hedging_final"]["campaign_id"]
+        # --- CHANGE 1: Target the new 'inherent_cost_fitness' experiment ---
+        campaign_id = EXPERIMENTS["inherent_cost_fitness"]["campaign_id"]
     except KeyError as e:
         print(
-            f"Error: Required experiment key 'bet_hedging_final' not found in src/config.py.",
+            f"Error: Required experiment key 'inherent_cost_fitness' not found in src/config.py.",
             file=sys.stderr,
         )
         sys.exit(1)
 
+    # --- Data Loading ---
     summary_path = os.path.join(
         project_root,
         "data",
@@ -98,45 +84,61 @@ def main():
     print(f"Loading data from: {summary_path}")
     df = pd.read_csv(summary_path)
 
+    # --- Data Processing and Filtering ---
     df = df[~np.isclose(df["phi"], 1.0)].copy()
     df_filtered = df[df["termination_reason"] == "converged"].copy()
 
-    env_name = PARAM_GRID["env_definitions"]["symmetric_refuge_60w"]["name"]
+    # --- CHANGE 2: Explicitly filter for one of the new environments ---
+    # The new experiment contains multiple environments. We select one for this figure.
+    # You can change this to "inherent_cost_30w" or "inherent_cost_120w" to generate
+    # figures for the other patch sizes.
+    target_env_name = "inherent_cost_60w"
+
     df_plot_data = df_filtered[
-        (df_filtered["env_definition"] == env_name) & (df_filtered["k_total"] > 0)
+        (df_filtered["env_definition"] == target_env_name)
+        & (df_filtered["k_total"] > 0)
     ].copy()
 
     if df_plot_data.empty:
         print(
-            f"\nERROR: No data found for environment '{env_name}' in campaign '{campaign_id}' after filtering.",
+            f"\nERROR: No data found for environment '{target_env_name}' in campaign '{campaign_id}' after filtering.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     figure_dir = os.path.join(project_root, "figures")
     os.makedirs(figure_dir, exist_ok=True)
-    # --- CHANGE: Output filenames ---
-    output_path_pdf = os.path.join(figure_dir, "fig3_adaptation_analysis.pdf")
-    output_path_eps = os.path.join(figure_dir, "fig3_adaptation_analysis.eps")
-    print(f"\nGenerating definitive Figure 3 from campaign: {campaign_id}")
+    # --- CHANGE 3: Use a new output filename ---
+    output_path = os.path.join(figure_dir, "fig_inherent_cost_analysis.png")
+    print(f"\nGenerating figure for inherent cost from campaign: {campaign_id}")
 
-    # --- CHANGE: Plotting setup for publication ---
-    sns.set_theme(style="ticks", context="paper")
-    fig, axes = plt.subplots(
-        2, 2, figsize=(cm_to_inch(17.8), cm_to_inch(16)), constrained_layout=True
-    )
+    # --- Plotting Setup ---
+    sns.set_theme(style="ticks", context="talk")
+    fig, axes = plt.subplots(2, 2, figsize=(18, 16), constrained_layout=True)
+    # --- CHANGE 4: Update the main figure title ---
     fig.suptitle(
-        f"Fitness Landscape in a Periodic Environment ({env_name})", fontsize=12, y=1.03
+        f"Fitness Landscape with Inherent Cost ({target_env_name})", fontsize=28, y=1.03
     )
 
+    # Panels A, B, C: Fitness landscapes at different inherent fitness levels
     bm_all = np.sort(df_plot_data["b_m"].unique())
     bm_targets = [0.9, 0.5, 0.2]
     bm_vals = [find_nearest(bm_all, val) for val in bm_targets]
 
+    # --- CHANGE 5: Update panel titles to reflect the new meaning of b_m ---
     panel_map = {
-        bm_vals[0]: (axes[0, 0], f"(A) Weak Disadvantage ($b_m$ = {bm_vals[0]:.2f})"),
-        bm_vals[1]: (axes[0, 1], f"(B) Medium Disadvantage ($b_m$ = {bm_vals[1]:.2f})"),
-        bm_vals[2]: (axes[1, 0], f"(C) Strong Disadvantage ($b_m$ = {bm_vals[2]:.2f})"),
+        bm_vals[0]: (
+            axes[0, 0],
+            f"(A) High Inherent Fitness ($b_m$ = {bm_vals[0]:.2f})",
+        ),
+        bm_vals[1]: (
+            axes[0, 1],
+            f"(B) Medium Inherent Fitness ($b_m$ = {bm_vals[1]:.2f})",
+        ),
+        bm_vals[2]: (
+            axes[1, 0],
+            f"(C) Low Inherent Fitness ($b_m$ = {bm_vals[2]:.2f})",
+        ),
     }
 
     for bm_val, (ax, title) in panel_map.items():
@@ -144,8 +146,11 @@ def main():
         if not df_panel.empty:
             plot_strategy_panel(ax, df_panel, title)
 
+    # Panel D: Optimal Strategy Comparison
     ax_d = axes[1, 1]
-    df_periodic_filtered = df_filtered[df_filtered["env_definition"] == env_name]
+
+    # Filter the full dataset for the specific environment to get a clean baseline
+    df_periodic_filtered = df_filtered[df_filtered["env_definition"] == target_env_name]
     phi_irr_val = find_nearest(df_periodic_filtered["phi"].unique(), -1.0)
     df_baseline_runs = df_periodic_filtered[
         np.isclose(df_periodic_filtered["phi"], phi_irr_val)
@@ -171,10 +176,9 @@ def main():
         label="Irreversible Strategy ($\\phi=-1.0$)",
         color="crimson",
         marker="s",
-        lw=2,
+        lw=3.5,
         ls="--",
-        capsize=3,
-        ms=5,
+        capsize=5,
     )
     ax_d.errorbar(
         x=df_pareto_stats["b_m"],
@@ -183,9 +187,9 @@ def main():
         label="Optimal Reversible Strategy",
         color="royalblue",
         marker="o",
-        lw=2.5,
-        ms=6,
-        capsize=3,
+        lw=4,
+        ms=10,
+        capsize=5,
     )
     ax_d.fill_between(
         df_pareto_stats["b_m"],
@@ -196,19 +200,16 @@ def main():
         label="Advantage of Reversibility",
     )
 
-    # --- CHANGE: Font sizes ---
-    ax_d.set_title("(D) Optimal Strategy Performance", fontsize=10)
-    ax_d.set_xlabel("Mutant Fitness in Hostile Patch, $b_m$", fontsize=8)
-    ax_d.set_ylabel("Long-Term Fitness (Front Speed)", fontsize=8)
+    ax_d.set_title("(D) Optimal Strategy Performance", fontsize=20)
+    # --- CHANGE 6: Update the x-axis label for Panel D ---
+    ax_d.set_xlabel("Inherent Mutant Fitness, $b_m$", fontsize=16)
+    ax_d.set_ylabel("Long-Term Fitness (Front Speed)", fontsize=16)
     ax_d.grid(True, which="both", ls=":")
-    ax_d.legend(fontsize=7)
-    ax_d.tick_params(axis="both", which="major", labelsize=7)
+    ax_d.legend(fontsize=14)
 
     sns.despine(fig)
-    # --- CHANGE: Save to PDF and EPS ---
-    plt.savefig(output_path_pdf, bbox_inches="tight")
-    plt.savefig(output_path_eps, bbox_inches="tight")
-    print(f"\nDefinitive Figure 3 saved to: {output_path_pdf} and {output_path_eps}")
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    print(f"\nInherent cost figure saved to: {output_path}")
 
 
 if __name__ == "__main__":
