@@ -1,4 +1,4 @@
-# FILE: src/worker.py (Updated with dynamic class selection)
+# FILE: src/worker.py (Corrected - Standalone Aif Model)
 
 import argparse
 import gzip
@@ -8,8 +8,6 @@ import sys
 import traceback
 from pathlib import Path
 from typing import Dict, Any
-
-# --- Add numpy import for the fix ---
 import numpy as np
 
 # --- Robust Path Setup ---
@@ -19,9 +17,13 @@ if not project_root:
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# --- CORRECTED IMPORTS ---
+# All necessary classes are imported. GillespieRadialSimulation is removed.
 from src.core.model import GillespieSimulation
-# --- NEW IMPORT ---
 from src.core.model_transient import GillespieTransientStateSimulation
+from src.core.model_aif import GillespieAifReplication
+from src.core.metrics_aif import AifSectorWidthTracker
+
 from src.core.metrics import (
     MetricsManager,
     MetricTracker,
@@ -34,7 +36,6 @@ from src.core.metrics import (
     FixationTimeTracker,
 )
 
-# ... (RUN_MODE_CONFIG and BULKY_DATA_KEYS are unchanged) ...
 RUN_MODE_CONFIG = {
     "calibration": {"tracker_class": BoundaryDynamicsTracker, "tracker_params": {}},
     "diffusion": {
@@ -84,11 +85,12 @@ RUN_MODE_CONFIG = {
             "convergence_threshold": "convergence_threshold",
         },
     },
-    "visualization": {"tracker_class": MetricTracker, "tracker_params": {}},
-    "fixation_analysis": {
-        "tracker_class": FixationTimeTracker,
-        "tracker_params": {},  # No special params needed
+    "aif_width_analysis": {
+        "tracker_class": AifSectorWidthTracker,
+        "tracker_params": {"max_steps": "max_steps"},
     },
+    "visualization": {"tracker_class": MetricTracker, "tracker_params": {}},
+    "fixation_analysis": {"tracker_class": FixationTimeTracker, "tracker_params": {}},
 }
 BULKY_DATA_KEYS = [
     "timeseries",
@@ -98,13 +100,7 @@ BULKY_DATA_KEYS = [
 ]
 
 
-# --- NEW HELPER CLASS FOR THE FIX ---
 class NumpyEncoder(json.JSONEncoder):
-    """
-    A custom JSON encoder that handles NumPy data types.
-    This prevents `TypeError: Object of type int64 is not JSON serializable`.
-    """
-
     def default(self, obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -115,27 +111,30 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 
-# --- END OF NEW HELPER CLASS ---
-
-
 def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
-    # --- DYNAMICALLY CHOOSE THE SIMULATION CLASS ---
-    if params.get("switching_lag_duration", 0.0) > 0.0:
+    # --- CORRECTED Dynamic Class Selection Logic ---
+    SimClass = None
+    if "b_sus" in params:
+        # The presence of a 'b_sus' parameter is the unique trigger for the Aif model.
+        SimClass = GillespieAifReplication
+    elif params.get("switching_lag_duration", 0.0) > 0.0:
+        # The transient state (microlag) model.
         SimClass = GillespieTransientStateSimulation
     else:
+        # The default linear front model.
         SimClass = GillespieSimulation
-    # --- END OF DYNAMIC CHOICE LOGIC ---
+    # --- END OF CORRECTION ---
 
     run_mode = params.get("run_mode")
     if run_mode not in RUN_MODE_CONFIG:
         raise ValueError(f"Unknown run_mode: '{run_mode}'")
-    
+
     manager = MetricsManager(params)
     config = RUN_MODE_CONFIG[run_mode]
     manager.add_tracker(config["tracker_class"], config["tracker_params"])
-    
+
     sim = SimClass(**params)
-    
+
     manager.register_simulation(sim)
     max_steps = params.get("max_steps", 50_000_000)
     max_time = params.get("max_run_time", float("inf"))
@@ -185,17 +184,13 @@ def main():
                 prefix = "ts" if "timeseries" in key else "traj"
                 out_path = data_dir / f"{prefix}_{task_id}.json.gz"
                 with gzip.open(out_path, "wt", encoding="utf-8") as f_gz:
-                    # --- FIX IS ALSO APPLIED HERE FOR CONSISTENCY ---
                     json.dump(bulky_data, f_gz, cls=NumpyEncoder)
 
-        # --- THIS IS THE CORRECTED LINE ---
-        # We now pass our custom encoder class to json.dumps().
         print(
             json.dumps(
                 result_data, allow_nan=True, separators=(",", ":"), cls=NumpyEncoder
             )
         )
-        # --- END OF CORRECTION ---
 
     except Exception:
         task_id = params.get("task_id", "unknown_task")

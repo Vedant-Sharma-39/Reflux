@@ -4,9 +4,11 @@ import numpy as np
 import pandas as pd
 from typing import List, Tuple, Dict, Any, Type, TYPE_CHECKING
 from collections import deque
+from scipy.spatial import distance
 
 if TYPE_CHECKING:
     from src.core.model import GillespieSimulation
+    from src.core.model_aif import GillespieAifReplication
 # This import is now needed to resolve the env_definition string
 from src.config import PARAM_GRID
 
@@ -338,7 +340,6 @@ class SteadyStatePropertiesTracker(MetricTracker):
                 else np.nan
             ),
         }
-
 
 class TimeSeriesTracker(MetricTracker):
     def __init__(self, sim: "GillespieSimulation", log_interval: float, **kwargs):

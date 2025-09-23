@@ -99,7 +99,8 @@ class GillespieSimulation:
         self.global_b_m, self.global_k_total, self.global_phi = b_m, k_total, phi
         self.time, self.step_count = 0.0, 0
         realistic_capacity = width * 100
-        self.MAX_EVENTS = realistic_capacity
+        capacity = params.get("event_tree_capacity", width * 100)
+        self.MAX_EVENTS = int(capacity)
         self.tree = SummedRateTree(self.MAX_EVENTS)
         self.event_to_idx: Dict[Tuple, int] = {}
         self.idx_to_event: Dict[int, Tuple] = {}
