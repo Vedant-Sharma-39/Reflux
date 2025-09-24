@@ -21,8 +21,7 @@ if project_root not in sys.path:
 # All necessary classes are imported. GillespieRadialSimulation is removed.
 from src.core.model import GillespieSimulation
 from src.core.model_transient import GillespieTransientStateSimulation
-from src.core.model_aif import GillespieAifReplication
-from src.core.metrics_aif import AifSectorWidthTracker
+from src.core.metrics_aif import AifMetricsManager, AifSectorTrajectoryTracker
 
 from src.core.metrics import (
     MetricsManager,
@@ -86,9 +85,15 @@ RUN_MODE_CONFIG = {
         },
     },
     "aif_width_analysis": {
-        "tracker_class": AifSectorWidthTracker,
+        "tracker_class": AifMetricsManager,
         "tracker_params": {"max_steps": "max_steps"},
     },
+    
+    "aif_sector_trajectory": {
+        "tracker_class": AifSectorTrajectoryTracker,
+        "tracker_params": {},
+    },
+    
     "visualization": {"tracker_class": MetricTracker, "tracker_params": {}},
     "fixation_analysis": {"tracker_class": FixationTimeTracker, "tracker_params": {}},
 }
@@ -97,6 +102,7 @@ BULKY_DATA_KEYS = [
     "trajectory",
     "roughness_sq_trajectory",
     "front_dynamics",
+    "sector_trajectory",
 ]
 
 
@@ -178,7 +184,16 @@ def main():
         for key in BULKY_DATA_KEYS:
             if key in result_data:
                 bulky_data = result_data.pop(key)
-                subdir_name = "timeseries" if "timeseries" in key else "trajectories"
+                
+                if "timeseries" in key:
+                    subdir_name = "timeseries_data"
+                elif "trajectory" in key:
+                    subdir_name = "trajectories"
+                elif key == "final_population":
+                    subdir_name = "populations"
+                else:
+                    subdir_name = "trajectories"
+                
                 data_dir = Path(args.output_dir).parent / subdir_name
                 data_dir.mkdir(exist_ok=True)
                 prefix = "ts" if "timeseries" in key else "traj"

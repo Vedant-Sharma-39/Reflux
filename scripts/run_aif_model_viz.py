@@ -71,9 +71,10 @@ def main():
         "campaign_id": "debug_aif_model_viz",
         "run_mode": "visualization",
         "initial_droplet_radius": 25,
-        "initial_resistant_fraction": 0.05,
+        "initial_condition_type": "aif_droplet",
+        "initial_resistant_fraction": 0.1,
         "b_sus": 1.0,
-        "b_res": 1.0 - 0.05,
+        "b_res": 1.0 - 0.02,
         "b_comp": 1.0,
         "k_res_comp": 1e-2,
     }
