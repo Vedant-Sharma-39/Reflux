@@ -33,9 +33,9 @@ def main():
         "sector_width_initial": 30,  # Controls the angular width of each initial sector
         # --- AIF Model Physics ---
         "b_sus": 1.0,
-        "b_res": 0.98,  # Resistant cells grow slightly slower
+        "b_res": 0.7,  # Resistant cells grow slightly slower
         "b_comp": 1.0,  # Compensated cells recover full fitness
-        "k_res_comp": 5e-4,  # A slow rate of compensation
+        "k_res_comp": 0,  # A slow rate of compensation
     }
 
     print("\nUsing parameters:")

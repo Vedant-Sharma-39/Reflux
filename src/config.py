@@ -442,32 +442,39 @@ EXPERIMENTS = {
             }
         },
     },
-    "aif_equilibrium_finding": {
-        "campaign_id": "aif_equilibrium_finding",
-        "run_mode": "aif_sector_trajectory",  # This will link to our new tracker
-        "hpc_params": {"time": "02:00:00", "mem": "4G", "sims_per_task": 40},
+    
+    "aif_definitive_spatial_scan": {
+        "campaign_id": "aif_definitive_spatial_scan_v2", # Versioning is good practice
+        "run_mode": "aif_width_analysis",
+        "hpc_params": {"time": "04:30:00", "mem": "4G", "sims_per_task": 25}, # Slightly more time
         "sim_sets": {
             "main": {
                 "base_params": {
+                    # --- Refined Robust Parameters ---
                     "initial_condition_type": "sector",
-                    "initial_droplet_radius": 50,  # A reasonably large colony to start
+                    "initial_droplet_radius": 60,  # INCREASED for robustness
                     "num_sectors": 1,
-                    "num_replicates": 25,
-                    "max_steps": 300000,
-                    # --- CORE PHYSICS ---
-                    "b_sus": 1.0,
-                    "b_comp": 1.0,  # Not used, but good to have
-                    "k_res_comp": 0.0,  # CRITICAL: No compensatory mutations
+                    "num_replicates": 250,
+                    "max_steps": 350000,
+                    # --- AIF Physics ---
+                    "b_sus": 1.0, "b_comp": 1.0, "k_res_comp": 0.0,
                 },
                 "grid_params": {
-                    # Scan across different fitness costs for the resistant strain
-                    "b_res": [0.99, 0.985, 0.98, 0.975, 0.97],
-                    # Scan across different initial widths (in cells, approx)
-                    "sector_width_initial": [5, 10, 20, 40],
+                    # --- REFINED EXPERT b_res SCAN ---
+                    # This non-linear scan focuses resolution on the critical region near 1.0
+                    "b_res": np.unique(np.round(np.concatenate([
+                        np.arange(0.7, 0.9, 0.1),    # Coarse scan for strong disadvantage
+                        np.arange(0.92, 0.98, 0.05),  # Medium scan for weak disadvantage
+                        np.arange(0.99, 1.01, 0.05),  # HIGH DENSITY scan around neutral point
+                    ]), 4)).tolist(),
+                    
+                    # Scan initial width to make the dataset future-proof
+                    "sector_width_initial": [20, 40, 60], # Adjusted to new radius
                 },
             }
         },
     },
+
     # =========================================================================
     # === DEBUGGING
     # =========================================================================

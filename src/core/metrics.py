@@ -2,13 +2,13 @@
 
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Dict, Any, Type, TYPE_CHECKING
+from typing import List, Tuple, Dict, Any, Type, TYPE_CHECKING, Optional
 from collections import deque
 from scipy.spatial import distance
 
 if TYPE_CHECKING:
     from src.core.model import GillespieSimulation
-    from src.core.model_aif import GillespieAifReplication
+    from src.core.model_aif import AifModelSimulation
 # This import is now needed to resolve the env_definition string
 from src.config import PARAM_GRID
 
@@ -17,7 +17,7 @@ class MetricTracker:
     """Base class for all metric trackers."""
 
     def __init__(self, sim: "GillespieSimulation", **kwargs):
-        self.sim = sim
+        self.sim = sim 
 
     def initialize(self):
         pass
