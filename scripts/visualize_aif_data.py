@@ -29,7 +29,7 @@ OUTPUT_IMAGE_PATH = (
 
 # Define the colormap using the integer types required by HexPlotter
 AIF_COLORMAP = {
-    1: "#6c757d",  # Susceptible (Grey)
+    1: "#e5b105",  # Susceptible (Orange)
     2: "#e63946",  # Resistant (Red)
     3: "#457b9d",  # Compensated (Blue)
 }

@@ -446,15 +446,15 @@ EXPERIMENTS = {
     "aif_definitive_spatial_scan": {
         "campaign_id": "aif_definitive_spatial_scan_v2", # Versioning is good practice
         "run_mode": "aif_width_analysis",
-        "hpc_params": {"time": "04:30:00", "mem": "4G", "sims_per_task": 25}, # Slightly more time
+        "hpc_params": {"time": "04:30:00", "mem": "4G", "sims_per_task": 100}, # Slightly more time
         "sim_sets": {
             "main": {
                 "base_params": {
                     # --- Refined Robust Parameters ---
                     "initial_condition_type": "sector",
-                    "initial_droplet_radius": 60,  # INCREASED for robustness
+                    "initial_droplet_radius": 100,
                     "num_sectors": 1,
-                    "num_replicates": 250,
+                    "num_replicates": 500,
                     "max_steps": 350000,
                     # --- AIF Physics ---
                     "b_sus": 1.0, "b_comp": 1.0, "k_res_comp": 0.0,
@@ -462,14 +462,12 @@ EXPERIMENTS = {
                 "grid_params": {
                     # --- REFINED EXPERT b_res SCAN ---
                     # This non-linear scan focuses resolution on the critical region near 1.0
-                    "b_res": np.unique(np.round(np.concatenate([
-                        np.arange(0.7, 0.9, 0.1),    # Coarse scan for strong disadvantage
-                        np.arange(0.92, 0.98, 0.05),  # Medium scan for weak disadvantage
-                        np.arange(0.99, 1.01, 0.05),  # HIGH DENSITY scan around neutral point
-                    ]), 4)).tolist(),
+                    "b_res": [
+                      0.9, 0.95, 0.97, 0.98, 0.985, 0.99, 0.992, 0.994, 0.996, 0.998, 1.0,
+                    ],
                     
                     # Scan initial width to make the dataset future-proof
-                    "sector_width_initial": [20, 40, 60], # Adjusted to new radius
+                    "sector_width_initial": [30, 60, 90, 120], # Adjusted to new radius
                 },
             }
         },

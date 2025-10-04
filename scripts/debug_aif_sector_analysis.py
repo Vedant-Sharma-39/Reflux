@@ -25,15 +25,15 @@ def main():
     params = {
         # --- Simulation Control ---
         "campaign_id": "debug_aif_multisector",
-        "max_steps": 200_000,
+        "max_steps": 1_000_000
         # --- Initial Conditions ---
         "initial_condition_type": "sector",
-        "initial_droplet_radius": 40,
+        "initial_droplet_radius": 300,
         "num_sectors": 3,
         "sector_width_initial": 30,  # Controls the angular width of each initial sector
         # --- AIF Model Physics ---
         "b_sus": 1.0,
-        "b_res": 0.7,  # Resistant cells grow slightly slower
+        "b_res": 0.9,  # Resistant cells grow slightly slower
         "b_comp": 1.0,  # Compensated cells recover full fitness
         "k_res_comp": 0,  # A slow rate of compensation
     }
