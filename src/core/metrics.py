@@ -664,16 +664,15 @@ class FrontConvergenceTracker(MetricTracker):
     def __init__(
         self,
         sim: "GillespieSimulation",
-        max_duration,
-        duration_unit,
-        convergence_window,
-        convergence_threshold,
+        max_cycles: int,
+        convergence_window_cycles: int,
+        convergence_threshold: float,
         **kwargs,
     ):
         super().__init__(sim=sim, **kwargs)
-        self.max_duration = max_duration
-        self.duration_unit = duration_unit
-        self.convergence_window = convergence_window
+        self.max_duration = max_cycles
+        self.duration_unit = "cycles"
+        self.convergence_window = convergence_window_cycles
         self.convergence_threshold = convergence_threshold
 
         self.speeds = deque(maxlen=self.convergence_window)
@@ -682,72 +681,101 @@ class FrontConvergenceTracker(MetricTracker):
         self.durations_completed = 0
         self._is_done = False
 
-        if self.duration_unit == "cycles":
-            env_map = kwargs.get("environment_map", {})
-            patch_width = kwargs.get("patch_width", 0)
+        env_def = kwargs.get("env_definition", {})
+        if isinstance(env_def, str):
+            env_def = PARAM_GRID.get("env_definitions", {}).get(env_def, {})
+        
+        cycle_q = 0.0
+        if env_def:
+            if not env_def.get("scrambled"):
+                cycle_q = sum(p.get("width", 0) for p in env_def.get("patches", []))
+            else:
+                cycle_q = env_def.get("cycle_length", 0)
 
-            # --- THIS IS THE FIX for Problem 1 ---
-            env_def = kwargs.get("env_definition", {})
-            # Resolve the env_def if it's a string key
-            if isinstance(env_def, str):
-                env_def = PARAM_GRID.get("env_definitions", {}).get(env_def, {})
-            # --- END FIX ---
-
-            cycle_q = 0.0
-            if patch_width > 0 and env_map:
-                cycle_q = patch_width * len(env_map)
-            elif env_def:
-                cycle_q = (
-                    sum(p["width"] for p in env_def.get("patches", []))
-                    if not env_def.get("scrambled")
-                    else env_def.get("cycle_length", 0)
-                )
-
-            self.interval_length = cycle_q
-            if self.interval_length <= 0:
-                raise ValueError(
-                    "Cycle-based convergence requires a defined cycle length."
-                )
-        else:  # 'time'
-            self.interval_length = kwargs.get("convergence_check_interval", 100.0)
+        self.interval_length = cycle_q
+        if self.interval_length <= 0:
+            raise ValueError(
+                "FrontConvergenceTracker requires a positive cycle length in the environment definition."
+            )
+            
+        # These will track the precise time of each interval crossing.
+        self.last_crossing_time = 0.0
+        self.last_pos = 0.0
+        self.last_time = 0.0
 
     def is_done(self) -> bool:
         return self._is_done
 
     def after_step_hook(self):
-        if not hasattr(self, "last_pos"):
-            self.last_pos = self.sim.mean_front_position
-            self.last_time = self.sim.time
+        """
+        DEFINITIVELY CORRECTED logic using linear interpolation to get the
+        exact time of boundary crossing, making the speed measurement robust
+        and independent of the simulation's variable dt.
+        """
+        current_pos = self.sim.mean_front_position
+        current_time = self.sim.time
+        
+        # Target for the *next* interval we need to cross
+        target_pos = (self.durations_completed + 1) * self.interval_length
 
-        current_progress = (
-            self.sim.mean_front_position
-            if self.duration_unit == "cycles"
-            else self.sim.time
-        )
-        target_progress = (self.durations_completed + 1) * self.interval_length
+        # Use a WHILE loop to handle cases where we might cross multiple boundaries
+        # in a single, large simulation step.
+        while current_pos >= target_pos:
+            # --- START OF THE NEW, ROBUST INTERPOLATION LOGIC ---
+            
+            # This is the distance the front has moved since the last step
+            step_dist = current_pos - self.last_pos
+            # This is the time elapsed during this single step
+            step_time = current_time - self.last_time
 
-        if current_progress >= target_progress:
-            end_pos, end_time = self.sim.mean_front_position, self.sim.time
-            delta_dist, delta_time = end_pos - self.last_pos, end_time - self.last_time
+            # Calculate the fraction of the *last step* needed to reach the target exactly.
+            if step_dist > 1e-9:
+                fraction_of_step = (target_pos - self.last_pos) / step_dist
+            else:
+                fraction_of_step = 1.0 # Avoid division by zero
+            
+            # Interpolate to find the precise time of the crossing.
+            time_at_crossing = self.last_time + fraction_of_step * step_time
 
-            self.speeds.append(delta_dist / delta_time if delta_time > 1e-9 else 0.0)
-            self.rho_m_samples.append(self.sim.mutant_fraction)
+            # The duration of this specific cycle is the time between this crossing and the last one.
+            cycle_duration = time_at_crossing - self.last_crossing_time
+            
+            # The speed for this cycle is the exact distance divided by the exact duration.
+            if cycle_duration > 1e-9:
+                speed_for_this_cycle = self.interval_length / cycle_duration
+                self.speeds.append(speed_for_this_cycle)
+                self.rho_m_samples.append(self.sim.mutant_fraction)
+
+            # Update the state for the *next* cycle's calculation.
+            self.last_crossing_time = time_at_crossing
             self.durations_completed += 1
-
-            self.last_pos, self.last_time = end_pos, end_time
-
+            
+            # Check for convergence or max duration *inside* the loop
             if len(self.speeds) == self.convergence_window:
                 mean_speed = np.mean(self.speeds)
                 if (
                     mean_speed > 1e-9
-                    and (np.std(self.speeds, ddof=1) / mean_speed)
-                    < self.convergence_threshold
+                    and (np.std(self.speeds, ddof=1) / mean_speed) < self.convergence_threshold
                 ):
                     self.termination_reason = "converged"
                     self._is_done = True
+                    break
 
             if self.durations_completed >= self.max_duration:
                 self._is_done = True
+                break
+            
+            # Update target for the next iteration of the while loop
+            target_pos = (self.durations_completed + 1) * self.interval_length
+            # --- END OF NEW LOGIC ---
+
+        # After the loop (or if no boundary was crossed), update the "last step" info.
+        self.last_pos = current_pos
+        self.last_time = current_time
+        
+        # Immediately stop if a final state is reached.
+        if self._is_done:
+            return
 
     def finalize(self) -> Dict[str, Any]:
         return {

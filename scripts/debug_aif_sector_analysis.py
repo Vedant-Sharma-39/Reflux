@@ -28,7 +28,7 @@ def main():
         "max_steps": 1_000_000
         # --- Initial Conditions ---
         "initial_condition_type": "sector",
-        "initial_droplet_radius": 300,
+        "initial_droplet_radius": 400,
         "num_sectors": 3,
         "sector_width_initial": 30,  # Controls the angular width of each initial sector
         # --- AIF Model Physics ---

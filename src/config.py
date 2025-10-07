@@ -175,7 +175,7 @@ EXPERIMENTS = {
         "sim_sets": {
             "main_scan": {
                 "base_params": {
-                    "width": 256,
+                    "width": 512,
                     "length": 16384,
                     "initial_condition_type": "mixed",
                     "num_replicates": 16,
@@ -532,31 +532,7 @@ EXPERIMENTS = {
             }
         },
     },
-    "debug_microlag_viz": {
-        "campaign_id": "debug_microlag_viz",
-        "run_mode": "visualization",  # This enables the plotter
-        "sim_sets": {
-            "main": {
-                "base_params": {
-                    # Use the same base setup as the other viz debug
-                    "width": 128,
-                    "length": 1024,
-                    "initial_condition_type": "patch",
-                    "initial_mutant_patch_size": 64,
-                    "env_definition": "debug_viz_refuge",
-                    "b_m": 0.5,
-                    "phi": 0.0,
-                    # --- CORE PARAMETERS FOR THIS TEST ---
-                    # Set a non-zero switching rate that will be "unlocked" later.
-                    # A slightly higher k makes the change more dramatic and visible.
-                    "k_total": 0.5,
-                    # Set a lag time that is long enough to see the initial "no-switching"
-                    # phase clearly, but not so long the simulation ends before it's over.
-                    "switching_arrest_time": 100.0,
-                },
-            }
-        },
-    },
+
     "debug_transient_state_viz": {
         "campaign_id": "debug_transient_state_viz",
         "run_mode": "visualization",
@@ -571,9 +547,9 @@ EXPERIMENTS = {
                     "b_m": 0.5,
                     "phi": 0.0,
                     # A high switching rate makes the transient states appear frequently.
-                    "k_total": 0.1,
+                    "k_total": 10,
                     # The duration each cell will be "stuck" when it switches.
-                    "switching_lag_duration": 0.5,
+                    "switching_lag_duration": 20000,
                 },
             }
         },

@@ -147,9 +147,6 @@ class GillespieSimulation:
                 self._add_event(("switch", h, Mutant), self.k_wt_m)
             elif cell_type == Mutant and self.k_m_wt > 0:
                 self._add_event(("switch", h, Wildtype), self.k_m_wt)
-
-            # --- START OF CRITICAL FIX ---
-            # Handle growth events with normalized rate
             b_wt, b_m = self._get_params_for_q(h.q) # Get fitness for the parent cell's location
             growth_rate = b_wt if cell_type == Wildtype else b_m
             
@@ -161,9 +158,7 @@ class GillespieSimulation:
                 
                 for neighbor in empty_neighbors:
                     self._add_event(("grow", h, neighbor), normalized_rate)
-            # --- END OF CRITICAL FIX ---
 
-    # ... (The rest of the file is unchanged) ...
     def _precompute_env_params(self, **kwargs):
         self.k_wt_m, self.k_m_wt = self._calculate_asymmetric_rates(self.global_k_total, self.global_phi)
         self.is_radial_growth = kwargs.get("initial_condition_type") == "single_cell"
