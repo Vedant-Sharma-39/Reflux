@@ -80,7 +80,14 @@ class NumpyEncoder(json.JSONEncoder):
         return super(NumpyEncoder, self).default(obj)
 
 def run_simulation(params: Dict[str, Any]) -> Dict[str, Any]:
-    SimClass = AifModelSimulation if "b_sus" in params else GillespieSimulation
+    
+    if "b_sus" in params:
+        SimClass = AifModelSimulation
+    elif params.get("switching_lag_duration", 0) > 0:
+        SimClass = GillespieTransientStateSimulation
+    else:
+        SimClass = GillespieSimulation
+    
     run_mode = params.get("run_mode")
     if run_mode not in RUN_MODE_CONFIG:
         raise ValueError(f"Unknown or misconfigured run_mode: '{run_mode}'")
@@ -121,7 +128,7 @@ def main():
                 elif "timeseries" in key: subdir_name, prefix = "timeseries", "ts"
                 else: subdir_name, prefix = "other_data", "dat"
                 data_dir = Path(args.output_dir).parent / subdir_name
-                data_dir.mkdir(exist_ok=True)
+                data_dir.mkdir(parents=True, exist_ok=True)
                 out_path = data_dir / f"{prefix}_{task_id}.json.gz"
                 with gzip.open(out_path, "wt", encoding="utf-8") as f_gz:
                     json.dump(bulky_data, f_gz, cls=NumpyEncoder)
