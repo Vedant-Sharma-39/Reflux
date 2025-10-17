@@ -11,9 +11,8 @@ Resistant   = 2
 Compensated = 3
 
 
-# ---------- lightweight cached geometry ----------
+# -------- axial -> Cartesian (pointy-top), cached in class ----------
 def axial_cartesian_fast(q: int, r: int) -> Tuple[float, float]:
-    """Pointy-top axial -> 2D Cartesian (no scale)."""
     x = 1.5 * q
     y = (np.sqrt(3) / 2.0) * q + np.sqrt(3) * r
     return x, y
@@ -21,96 +20,102 @@ def axial_cartesian_fast(q: int, r: int) -> Tuple[float, float]:
 
 class AifModelSimulation(GillespieSimulation):
     """
-    Radial colony with two types: Susceptible (grey) and Resistant (red).
-    Switching/compensation is OFF by default (k_res_comp = 0).
+    Minimal AIF radial colony model with two main types (S=grey, R=red).
+    Optional R->Compensated switching (off by default).
 
-    Logs sector widths on the *true* front with persistent lineage IDs (root_sid),
-    supports radius-aligned logging (ΔR), and optional width-dependent selection.
+    Provides:
+      - Circular droplet IC and resistant rim bands ("aif_front_bands")
+      - True-front sectorization with circular denoise + min-island merge
+      - Persistent sector IDs and root IDs
+      - Sector width logging by ΔR and/or step interval
+
+    Kept small to support scripts/debug_aif_streaks.py.
     """
 
     # ------------------------------ init ------------------------------
     def __init__(self, **params):
-        # Fitness & IC
+        # birth/switch
         self.b_sus  = float(params.get("b_sus", 1.0))
-        self.b_res  = float(params.get("b_res", 1.0 - 0.013))  # constant selection default
+        self.b_res  = float(params.get("b_res", 1.0))
         self.b_comp = float(params.get("b_comp", 1.0))
-        self.k_res_comp = float(params.get("k_res_comp", 0.0))  # OFF for now
+        self.k_res_comp = float(params.get("k_res_comp", 0.0))  # usually 0 in debug script
 
+        # initial condition controls
         self.initial_droplet_radius     = int(params.get("initial_droplet_radius", 15))
         self.initial_resistant_fraction = float(params.get("initial_resistant_fraction", 0.10))
-        self.num_initial_resistant_cells = int(params.get("num_initial_resistant_cells", 0))
-        self.correlation_length = float(params.get("correlation_length", 3.0))
+        self.num_initial_resistant_cells = int(params.get("num_initial_resistant_cells", 0))  # unused here but harmless
         self.band_width = int(params.get("band_width", 3))
         self.num_bands  = int(params.get("num_bands", 5))
 
-        # Optional width-dependent selection (disabled by default)
-        wd = params.get("width_selection", {}) or {}
-        self.widthsel_mode     = (wd.get("mode") or "constant").lower()  # "constant" | "logistic"
-        self.widthsel_s0       = float(wd.get("s0", 0.013))
-        self.widthsel_wc_cells = float(wd.get("wc_cells", 56.0))
-        self._s_eff_max_w      = int(params.get("widthsel_lookup_max", 1024))
-        self._s_eff_table      = self._build_s_eff_table(self._s_eff_max_w, self.widthsel_s0, self.widthsel_wc_cells)
+        # sector logging & persistence
+        self.sector_metrics_interval = int(params.get("sector_metrics_interval", 0)) or 0  # by step
+        self.sector_metrics_dr       = float(params.get("sector_metrics_dr", 0.0))          # by ΔR
+        self.radius_check_interval   = int(params.get("radius_check_interval", 64))         # throttle ΔR checks
+        self.front_denoise_window    = int(params.get("front_denoise_window", 0))           # circular majority window
+        self.min_island_len          = int(params.get("min_island_len", 0))                 # merge tiny sectors
+        self.sid_iou_thresh          = float(params.get("sid_iou_thresh", 0.30))            # match persistence
+        self.sid_center_delta        = float(params.get("sid_center_delta", 0.05))          # radians
+        self.death_hysteresis        = int(params.get("death_hysteresis", 2))               # (kept for compatibility)
+        self.sector_width_initial = int(params.get("sector_width_initial", 24))
+        self.sector_theta_center  = float(params.get("sector_theta_center", 0.0))
 
-        # Caches for geometry and front radius
+        # --- NEW: extinction-aware controls / status (safe-by-default) ---
+        self.stop_on_front_extinction: bool = bool(params.get("stop_on_front_extinction", False))
+        self.tracked_root_sid: Optional[int] = params.get("tracked_root_sid", None)
+        # For backward-compatibility, we do NOT auto-select a lineage unless you opt in.
+        self.infer_tracked_root: bool = bool(params.get("infer_tracked_root", False))
+        self.termination_reason: Optional[str] = None
+        self.extinction_scope: Optional[str] = None  # "tracked_lineage" | "single_mutant" | None
+
+        # Track how many distinct mutant roots ever appeared on the front
+        self._mutant_roots_ever_seen: Set[int] = set()
+
+        # lightweight caches
         self._xy_cache: Dict[Hex, Tuple[float, float]] = {}
         self._r2_cache: Dict[Hex, float] = {}
         self._front_r_sum: float = 0.0
         self._front_count: int = 0
 
-        # Sector width cache (for width-dep selection)
-        self._last_sector_width_by_hex: Dict[Hex, int] = {}
-
-        # Radial event capacity (bigger than linear)
-        params.setdefault("width",  self.initial_droplet_radius * 4)
-        params.setdefault("length", self.initial_droplet_radius * 10)
-        radial_capacity = int((6 * params["length"]) * 8 * 2.0)
-        params["event_tree_capacity"] = max(params.get("event_tree_capacity", 20000), radial_capacity)
-
-        # Parent init (builds initial population & front bookkeeping)
-        super().__init__(**params)
-
-        if self.plotter:
-            self.plotter.colormap = {Susceptible: "#6c757d", Resistant: "#e63946", Compensated: "#457b9d"}
-
-        # Counters
-        counts = Counter(self.population.values())
-        self.susceptible_cell_count = counts.get(Susceptible, 0)
-        self.resistant_cell_count   = counts.get(Resistant, 0)
-        self.compensated_cell_count = counts.get(Compensated, 0)
-        self.total_cell_count       = len(self.population)
-        self.mutant_cell_count      = self.resistant_cell_count
-
-        # Sector logging & persistence
-        self.sector_metrics_interval = int(params.get("sector_metrics_interval", 0)) or 0   # by step
-        self.sector_metrics_dr       = float(params.get("sector_metrics_dr", 0.0))          # by ΔR
-        self.radius_check_interval   = int(params.get("radius_check_interval", 64))         # throttle ΔR checks
-        self.front_denoise_window    = int(params.get("front_denoise_window", 0))
-        self.min_island_len          = int(params.get("min_island_len", 0))
-        self.sid_iou_thresh          = float(params.get("sid_iou_thresh", 0.30))
-        self.sid_center_delta        = float(params.get("sid_center_delta", 0.05))          # radians
-        self.death_hysteresis        = int(params.get("death_hysteresis", 2))
-
+        # persistent sector bookkeeping
         self.sector_traj_log: List[dict] = []
         self._sid_next = 1
         self._sid_root_map: Dict[int, int] = {}                             # ephemeral sid -> persistent root
         self._prev_sectors: List[Tuple[int, int, float, float, int]] = []   # [(sid,t,sθ,eθ,w)]
-        self._death_streaks: Dict[int, int] = {}
 
         self._last_logged_step_for_sectors = -1
         self._last_radius_check_step = -1
         self._next_radius_log: Optional[float] = None
 
-        # Initialize ΔR trigger after initial front exists
+        # make the event tree big enough for radial growth
+        params.setdefault("width",  self.initial_droplet_radius * 4)
+        params.setdefault("length", self.initial_droplet_radius * 10)
+        radial_capacity = int((6 * params["length"]) * 8 * 2.0)
+        params["event_tree_capacity"] = max(params.get("event_tree_capacity", 20000), radial_capacity)
+
+        super().__init__(**params)
+
+        if self.plotter:
+            self.plotter.colormap = {
+                Susceptible: "#6c757d",
+                Resistant:   "#e63946",
+                Compensated: "#457b9d",
+            }
+
+        # counts (handy but not strictly needed by debug script)
+        counts = Counter(self.population.values())
+        self.susceptible_cell_count = counts.get(Susceptible, 0)
+        self.resistant_cell_count   = counts.get(Resistant, 0)
+        self.compensated_cell_count = counts.get(Compensated, 0)
+        self.total_cell_count       = len(self.population)
+        self.mutant_cell_count      = self.resistant_cell_count + self.compensated_cell_count
+
+        # initialize ΔR trigger after first front exists
         if self.sector_metrics_dr and self.sector_metrics_dr > 0.0:
             r0 = self._mean_front_radius_fast()
             self._next_radius_log = r0 + self.sector_metrics_dr
 
-        # Warm the sector-width cache once
-        self._refresh_sector_width_cache()
-
     # --------------------- geometry & helpers ---------------------
     def _xy_r2(self, h: Hex) -> Tuple[float, float, float]:
-        """Return (x, y, r^2) with caching."""
         if h in self._r2_cache:
             x, y = self._xy_cache[h]
             return x, y, self._r2_cache[h]
@@ -139,105 +144,98 @@ class AifModelSimulation(GillespieSimulation):
             self._front_count -= 1
             self._front_r_sum -= self._radius(h)
 
-    # ---------------- population initialization ----------------
+    # --- replace/patch _initialize_population_pointytop with this version ---
     def _initialize_population_pointytop(self, ic_type: str, patch_size: int) -> Dict[Hex, int]:
         """
-        Build a true *circular* initial droplet in Euclidean metric, then seed
-        resistant bands on the rim if requested.
+        Build a circular initial droplet and seed resistant cells on the rim
+        according to `ic_type`:
+        - "sector": one contiguous resistant block of given width (in rim cells),
+                    centered at sector_theta_center (radians).
+        - "aif_front_bands": multiple bands of width `band_width` repeated `num_bands`.
+        - "aif_front_seeded": random single-cell seeds along the rim.
         """
         pop: Dict[Hex, int] = {}
         R = int(self.initial_droplet_radius)
-        droplet_cells: List[Hex] = []
 
-        # Euclidean circle test in axial-cartesian coords
+        # 1) circular droplet (Euclidean in axial-cartesian coords)
+        droplet_cells: List[Hex] = []
         cart_R2 = float(R) * float(R)
         for q in range(-R, R + 1):
-            for r in range(-2 * R, 2 * R + 1):  # generous axial window
+            for r in range(-2 * R, 2 * R + 1):
                 h = Hex(q, r, -q - r)
                 x, y = axial_cartesian_fast(h.q, h.r)
                 if (x * x + y * y) <= cart_R2:
                     droplet_cells.append(h)
-
         for h in droplet_cells:
             pop[h] = Susceptible
 
-        # rim (front) cells of the droplet
+        # 2) rim cells
         droplet_set = set(droplet_cells)
-        front_cells = []
-        for cell in droplet_cells:
-            for n in cell.neighbors():
-                if n not in droplet_set:
-                    front_cells.append(cell)
-                    break
+        front_cells = [cell for cell in droplet_cells if any(n not in droplet_set for n in cell.neighbors())]
+        if not front_cells:
+            return pop
 
-        # order rim by angle
+        # 3) angle-sorted rim
         def ang(h: Hex) -> float:
             x, y, _ = self._xy_r2(h)
             return float(np.arctan2(y, x))
-
         sorted_front = sorted(front_cells, key=ang)
+        thetas = [ang(h) for h in sorted_front]
         n_front = len(sorted_front)
+        if n_front == 0:
+            return pop
 
-        if ic_type == "aif_front_bands":
+        # 4) seed by type
+        if ic_type == "sector":
+            theta_c = float(getattr(self, "sector_theta_center", 0.0))
+            w_req   = int(getattr(self, "sector_width_initial", 24))
+            w = max(1, min(w_req, n_front))
+
+            def wrap_delta(a, c):
+                d = abs(a - c)
+                return min(d, 2 * np.pi - d)
+            center_idx = int(np.argmin([wrap_delta(t, theta_c) for t in thetas]))
+
+            half = w // 2
+            start = (center_idx - half) % n_front
+            for k in range(w):
+                idx = (start + k) % n_front
+                pop[sorted_front[idx]] = Resistant
+
+        elif ic_type == "aif_front_bands":
             starts = np.random.choice(n_front, size=min(self.num_bands, n_front), replace=False)
-            chosen = set()
             for s in starts:
                 for i in range(self.band_width):
-                    chosen.add((s + i) % n_front)
-            for i in chosen:
-                pop[sorted_front[i]] = Resistant
-            print(f"Seeding {len(starts)} resistant bands; each {self.band_width} cells wide (total {len(chosen)}).")
+                    pop[sorted_front[(s + i) % n_front]] = Resistant
+
         elif ic_type == "aif_front_seeded":
             k = max(1, int(n_front * self.initial_resistant_fraction))
             idxs = np.random.choice(n_front, size=min(k, n_front), replace=False)
             for i in idxs:
                 pop[sorted_front[i]] = Resistant
-            print(f"Seeded {len(idxs)} resistant front cells (random).")
 
+        # else: leave all susceptible
         return pop
 
     # ---------------------------- dynamics ----------------------------
-    def _build_s_eff_table(self, max_w: int, s0: float, wc_cells: float):
-        """Lookup for logistic width-dependent selection (if enabled)."""
-        if self.widthsel_mode != "logistic":
-            return None
-        ws = np.arange(1, max_w + 1, dtype=float)
-        s_eff = (2.0 * s0) / (1.0 + np.exp(wc_cells / ws))
-        return s_eff
-
-    def _s_eff_fast(self, w: int) -> float:
-        if self.widthsel_mode != "logistic":
-            return 0.0
-        if w <= 1:
-            w = 1
-        if w <= self._s_eff_max_w:
-            return float(self._s_eff_table[w - 1])
-        return float((2.0 * self.widthsel_s0) / (1.0 + np.exp(self.widthsel_wc_cells / float(w))))
-
     def _update_single_cell_events(self, h: Hex):
         # purge old events for this cell
         for event in list(self.cell_to_events.get(h, set())):
             self._remove_event(event)
 
-        cell_type = self.population.get(h)
-        if cell_type in (None, Empty):
+        t = self.population.get(h)
+        if t in (None, Empty):
             self._remove_from_front(h)
             return
 
-        empties = [n for n in self._get_neighbors_periodic(h) if self._is_valid_growth_neighbor(n, h)]
+        empties = [n for n in h.neighbors() if n not in self.population]
         if empties:
             self._add_to_front(h)
 
-            # birth rate (constant or width-dependent for red)
-            if cell_type == Susceptible:
+            if t == Susceptible:
                 base_birth_rate = self.b_sus
-            elif cell_type == Resistant:
-                if self.widthsel_mode == "logistic":
-                    w = int(self._last_sector_width_by_hex.get(h, 1))
-                    s_eff = self._s_eff_fast(w)
-                    base_birth_rate = self.b_sus * (1.0 - s_eff)
-                else:
-                    base_birth_rate = self.b_res
+            elif t == Resistant:
+                base_birth_rate = self.b_res
             else:
                 base_birth_rate = self.b_comp
 
@@ -246,7 +244,7 @@ class AifModelSimulation(GillespieSimulation):
                 for nei in empties:
                     self._add_event(("grow", h, nei), rate)
 
-            if cell_type == Resistant and self.k_res_comp > 0.0:
+            if t == Resistant and self.k_res_comp > 0.0:
                 self._add_event(("switch", h, Compensated), self.k_res_comp)
         else:
             self._remove_from_front(h)
@@ -278,8 +276,8 @@ class AifModelSimulation(GillespieSimulation):
     # --------------------- front -> sectors ---------------------
     def _compute_front_chain(self) -> List[Tuple[Hex, int, float]]:
         """
-        Angle-ordered *true* front. We rely on _front_lookup (cells with at least
-        one empty neighbor; outwardness handled statistically for radial colonies).
+        Angle-ordered true front: cells with ≥1 empty neighbor (outwardness
+        handled statistically in radial growth).
         """
         if not self._front_lookup:
             return []
@@ -296,14 +294,19 @@ class AifModelSimulation(GillespieSimulation):
 
     @staticmethod
     def _circular_majority(labels: List[int], w: int) -> List[int]:
+        """
+        Binary denoise over circular list: treat {Resistant,Compensated} as "mutant".
+        Outputs labels as either Resistant (mutant) or Susceptible (non-mutant).
+        """
         if not labels or w is None or w <= 1:
             return labels
         n = len(labels)
         out = labels[:]
         half = w // 2
+        def is_mutant(t): return t in (Resistant, Compensated)
         for i in range(n):
             idxs = [(i + k) % n for k in range(-half, half + 1)]
-            votes = sum(1 for j in idxs if labels[j] == Resistant)
+            votes = sum(1 for j in idxs if is_mutant(labels[j]))
             out[i] = Resistant if votes > len(idxs) // 2 else Susceptible
         return out
 
@@ -351,10 +354,11 @@ class AifModelSimulation(GillespieSimulation):
                     changed = True
                 else:
                     i += 1
-        if len(out) > 1 and out[0][0] == out[-1][0] and out[0][1] < min_len:
+        # symmetric wrap merge if the last tiny sector matches first type
+        if len(out) > 1 and out[0][0] == out[-1][0] and out[-1][1] < min_len:
             t0, w0, s0, e0 = out[0]
             tL, wL, sL, eL = out[-1]
-            out = [(t0, w0 + wL, s0, eL)] + out[1:-1]
+            out = [(t0, w0 + wL, sL, e0)] + out[1:-1]
         return out
 
     def _sectorize_front(self) -> List[Tuple[int, int, float, float]]:
@@ -383,9 +387,7 @@ class AifModelSimulation(GillespieSimulation):
     def _assign_persistent_ids(self, sectors_now: List[Tuple[int, int, float, float]]
                                ) -> List[Tuple[int, int, float, float, int, int]]:
         """
-        Match sectors to previous snapshot and return
-        [(type, width, startθ, endθ, sid, root_sid)].
-        New sectors get a new sid and a new root_sid (itself).
+        Return [(type, width, startθ, endθ, sid, root_sid)].
         """
         if not sectors_now:
             self._prev_sectors = []
@@ -428,44 +430,47 @@ class AifModelSimulation(GillespieSimulation):
 
         return assigned
 
-    def _refresh_sector_width_cache(self):
-        """Map each front Hex to its sector width (used if width-dependent selection is on)."""
-        self._last_sector_width_by_hex.clear()
-        chain = self._compute_front_chain()
-        if not chain:
-            return
-        types = [t for (_, t, _) in chain]
-        if self.front_denoise_window and self.front_denoise_window > 1:
-            types = self._circular_majority(types, self.front_denoise_window)
-        n = len(types)
-        i = 0
-        while i < n:
-            tcur = types[i]
-            j = i + 1
-            while j < n and types[j] == tcur:
-                j += 1
-            width = j - i
-            if i == 0 and j == n and n > 1 and types[0] == types[-1]:
-                width = n
-            for k in range(i, j):
-                h = chain[k][0]
-                self._last_sector_width_by_hex[h] = width
-            i = j
-
-    def _log_sector_widths_snapshot(self):
+    def _log_sector_widths_snapshot(self) -> List[Tuple[int, int, float, float, int, int]]:
+        """
+        Take a sector snapshot, append to trajectory log, and return enriched sectors:
+        [(type, width_cells, start_theta, end_theta, sid, root_sid)]
+        Also:
+          - if infer_tracked_root=True and tracked_root_sid is unset, auto-select first resistant root.
+          - update self._mutant_roots_ever_seen with any mutant roots present at the front.
+        """
         sectors = self._sectorize_front()
         sectors_sid = self._assign_persistent_ids(sectors)
-        self._refresh_sector_width_cache()  # keep cache synced at logging moments
 
         r_mean = self._mean_front_radius_fast()
         step = self.step_count
 
+        mutant_roots_now: Set[int] = set()
         for (t, w, s, e, sid, root) in sectors_sid:
             self.sector_traj_log.append(
                 dict(step=int(step), radius=float(r_mean),
                      sid=int(sid), root_sid=int(root), type=int(t),
                      width_cells=int(w), start_theta=float(s), end_theta=float(e))
             )
+            if t in (Resistant, Compensated):
+                mutant_roots_now.add(int(root))
+
+        # Update 'ever seen' set
+        self._mutant_roots_ever_seen.update(mutant_roots_now)
+
+        # (Optional) auto-seed tracked lineage, but only if explicitly enabled
+        if self.infer_tracked_root and self.tracked_root_sid is None:
+            for root in mutant_roots_now:
+                self.tracked_root_sid = int(root)
+                break
+
+        return sectors_sid
+
+    def _front_mutant_roots_now(self, sectors_sid: List[Tuple[int, int, float, float, int, int]]) -> Set[int]:
+        roots: Set[int] = set()
+        for (t, _w, _s, _e, _sid, root) in sectors_sid:
+            if t in (Resistant, Compensated):
+                roots.add(int(root))
+        return roots
 
     # ------------------------------ stepping ------------------------------
     def step(self):
@@ -480,7 +485,7 @@ class AifModelSimulation(GillespieSimulation):
             if (self.step_count - self._last_logged_step_for_sectors) >= self.sector_metrics_interval:
                 do_log = True
 
-        # (2) radius-based cadence (throttled)
+        # (2) radius-based cadence (throttled checks)
         if self.sector_metrics_dr and self.sector_metrics_dr > 0.0:
             if (self.step_count - self._last_radius_check_step) >= self.radius_check_interval:
                 self._last_radius_check_step = self.step_count
@@ -494,17 +499,42 @@ class AifModelSimulation(GillespieSimulation):
                         self._next_radius_log += jumps * self.sector_metrics_dr
 
         if do_log:
-            self._log_sector_widths_snapshot()
+            sectors_sid = self._log_sector_widths_snapshot()
             self._last_logged_step_for_sectors = self.step_count
+
+            # Extinction-aware early stopping (safe & unambiguous)
+            if self.stop_on_front_extinction:
+                roots_now = self._front_mutant_roots_now(sectors_sid)
+
+                if self.tracked_root_sid is not None:
+                    # strict, lineage-specific extinction
+                    if int(self.tracked_root_sid) not in roots_now:
+                        self.termination_reason = "tracked_lineage_extinct"
+                        self.extinction_scope = "tracked_lineage"
+                        return False, boundary_hit
+                else:
+                    # Only valid to call "sector extinction" if the system has ever been single-lineage
+                    # AND now there are no mutants at the front.
+                    ever = len(self._mutant_roots_ever_seen)
+                    if ever == 1 and len(roots_now) == 0:
+                        self.termination_reason = "single_mutant_extinct"
+                        self.extinction_scope = "single_mutant"
+                        return False, boundary_hit
+                    # Otherwise ambiguous (multi-lineage): keep running (no misleading reason).
+
+        # If we ever hit the boundary, record it unless a more specific reason already exists.
+        if boundary_hit and self.termination_reason is None:
+            self.termination_reason = "boundary_hit"
 
         return True, boundary_hit
 
-    # ------------------------ engine overrides ------------------------
+    # ------------------------ engine hooks ------------------------
     def _is_valid_growth_neighbor(self, neighbor: Hex, parent: Hex) -> bool:
         # radial colony: any empty neighbor is valid
         return neighbor not in self.population
 
     def _get_neighbors_periodic(self, h: Hex) -> list:
+        # simple cached neighbors (kept name for compatibility)
         if h in self.neighbor_cache:
             return self.neighbor_cache[h]
         neighbors = h.neighbors()
@@ -513,7 +543,8 @@ class AifModelSimulation(GillespieSimulation):
 
     @property
     def colony_radius(self) -> float:
+        # Euclidean median of front radii (consistent with ΔR)
         if not self._front_lookup:
             return 0.0
-        distances = [(abs(h.q) + abs(h.r) + abs(h.s)) / 2.0 for h in self._front_lookup]
-        return np.median(distances) if distances else 0.0
+        rs = [np.sqrt(self._xy_r2(h)[2]) for h in self._front_lookup]
+        return float(np.median(rs)) if rs else 0.0

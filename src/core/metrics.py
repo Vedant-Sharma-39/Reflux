@@ -67,35 +67,70 @@ class InvasionOutcomeTracker(MetricTracker):
         return {"outcome": self._outcome, "time_to_outcome": self._time_to_outcome}
 
 
+# FILE: src/core/metrics.py (The Corrected Tracker)
+
 class BoundaryDynamicsTracker(MetricTracker):
     """
     For 'boundary_analysis' (calibration) runs.
+
+    CORRECTED to measure mutant width ONLY on the expanding front and to
+    terminate the simulation when the mutant lineage is lost from the front.
+    The unnecessary 'num_fragments' field has been removed.
     """
     def __init__(self, sim: "GillespieSimulation", **kwargs):
         super().__init__(sim, **kwargs)
         self.trajectory: List[Tuple[float, float]] = []
         self._is_done = False
         self.result: Dict[str, Any] = {}
-
-    def after_step_hook(self):
-        current_width = self.sim.mutant_sector_width
-        self.trajectory.append((self.sim.time, current_width))
-        if current_width == 0:
-            self.result["outcome"], self.result["time_to_outcome"], self._is_done = "extinction", self.sim.time, True
-        elif current_width == self.sim.width:
-            self.result["outcome"], self.result["time_to_outcome"], self._is_done = "fixation", self.sim.time, True
+        self.outcome_recorded = False
 
     def is_done(self) -> bool:
         return self._is_done
 
+    def after_step_hook(self):
+        # --- FIX 1: Measure the width based on the front cells only ---
+        if not self.sim.m_front_cells:
+            current_front_width = 0
+        else:
+            # The width is the number of unique 'r' coordinates on the front
+            front_r_coords = {h.r for h in self.sim.m_front_cells.keys()}
+            current_front_width = len(front_r_coords)
+
+        # Append this correct measurement to the trajectory.
+        self.trajectory.append((self.sim.time, current_front_width))
+
+        # --- FIX 2: Check for termination based on the state of the front ---
+        if self.outcome_recorded:
+            return
+
+        front_has_mutants = bool(self.sim.m_front_cells)
+        front_has_wildtype = bool(self.sim.wt_front_cells)
+
+        # Only check after the simulation has properly started
+        if self.sim.step_count > 0:
+            if not front_has_mutants:
+                self.result["outcome"] = "mutant_front_extinction"
+                self.result["time_to_outcome"] = self.sim.time
+                self._is_done = True
+                self.outcome_recorded = True
+            elif not front_has_wildtype:
+                self.result["outcome"] = "mutant_front_fixation"
+                self.result["time_to_outcome"] = self.sim.time
+                self._is_done = True
+                self.outcome_recorded = True
+
     def finalize(self) -> dict:
-        if not self._is_done:
-            self.result["outcome"], self.result["time_to_outcome"] = "undecided_timeout", self.sim.time
+        # Record a timeout if no other outcome was reached
+        if not self.outcome_recorded:
+            self.result["outcome"] = "undecided_timeout"
+            self.result["time_to_outcome"] = self.sim.time
+        
         final_data = {"trajectory": self.trajectory}
         final_data.update(self.result)
-        final_data["num_fragments"] = self.sim.initial_num_fragments
+        
+        # --- FIX 3: 'num_fragments' has been removed ---
+        
         return final_data
-
 
 class FixationTimeTracker(MetricTracker):
     """

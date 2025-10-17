@@ -7,6 +7,7 @@ try:
 except Exception:
     AifModelSimulation = object  # typing fallback
 
+
 class AifMetricsManager(MetricTracker):
     """
     Tracker for 'aif_width_analysis'.
@@ -15,7 +16,7 @@ class AifMetricsManager(MetricTracker):
         sector_trajectory (list[dict]),
         num_sector_snapshots (int),
         final_population (optional),
-        a few convenience scalars.
+        convenience scalars + termination_reason and extinction_scope.
     """
     def __init__(self, sim: "AifModelSimulation", include_final_population: bool = True, **kwargs: Any):
         super().__init__(sim=sim, **kwargs)
@@ -35,6 +36,9 @@ class AifMetricsManager(MetricTracker):
             "final_radius": float(getattr(self.sim, "_mean_front_radius_fast")()),
             "final_step": int(self.sim.step_count),
             "final_front_length": int(getattr(self.sim, "_front_count", 0)),
+            "termination_reason": getattr(self.sim, "termination_reason", None) or "unknown",
+            "tracked_root_sid": getattr(self.sim, "tracked_root_sid", None),
+            "extinction_scope": getattr(self.sim, "extinction_scope", None),
         }
         if self.include_final_population:
             out["final_population"] = [
