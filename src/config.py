@@ -37,9 +37,9 @@ def _generate_gamma_environments(means, fano_factors):
 # =============================================================================
 PARAM_GRID = {
     # --- Core Parameter Scans ---
-    "aif_b_res_scan": [0.92, 0.95, 0.97],
-    "aif_initial_width_scan": [128, 256],
-    "bm_selected": [0.92, 0.95, 0.97],
+    "aif_b_res_scan": [0.92, 0.95, 0.97, 0.98, 0.99],
+    "aif_initial_width_scan": [32, 64, 128, 256],
+    "bm_selected": [0.92, 0.95, 0.97, 0.98, 0.99],
     "bm_final_wide": np.round(np.linspace(0.1, 1.0, 10), 2).tolist(),
     "phi_final_full": np.round(np.linspace(-1.0, 1.0, 9), 2).tolist(),
     "k_total_final_log": np.round(np.logspace(-2, 2, 20), 5).tolist(),
@@ -124,15 +124,14 @@ EXPERIMENTS = {
         "sim_sets": {
             "main": {
                 "base_params": {
-                    "width": 512,
+                    "width": 1024,
                     "length": 2048,
                     "k_total": 0.0,
                     "phi": 0.0,
                     "num_replicates": 50,
                     "initial_condition_type": "patch",
-                    "initial_mutant_patch_size": 128,
                 },
-                "grid_params": {"b_m": "bm_selected"},
+                "grid_params": {"b_m": "aif_b_res_scan", "initial_mutant_patch_size": "aif_initial_width_scan"},
             }
         },
     },
@@ -270,41 +269,41 @@ EXPERIMENTS = {
         },
     },
     
-    # Paste these two entries into EXPERIMENTS in src/config.py
 
-    "aif_definitive_spatial_scan": {
-        "campaign_id": "aif_spatial_scan_v1",
-        "run_mode": "aif_width_analysis",  # Uses AifMetricsManager to save the final population state
-        "hpc_params": {
-            "time": "04:00:00", 
-            "mem": "4G", 
-            "sims_per_task": 10
-        },
+    "aif_online_trajectory_scan": {
+        "campaign_id": "aif_online_scan_v1",
+        "run_mode": "aif_width_analysis",
+        "hpc_params": {"time": "05:00:00", "mem": "16G", "sims_per_task": 5},
         "sim_sets": {
             "main": {
                 "base_params": {
                     # --- Initial Conditions ---
                     "initial_condition_type": "sector",
-                    "initial_droplet_radius": 100, 
+                    "initial_droplet_radius": 400,
+                    # NOTE: 'num_sectors' isn't used by the engine for "sector" IC; safe to keep or remove.
                     "num_sectors": 1,
-                    
+
                     # --- Physics (No Rescue) ---
-                    "b_sus": 1.0,
-                    "b_comp": 1.0,
-                    "k_res_comp": 0.0,
-                    
+                    "b_sus": 1.0, "b_comp": 1.0, "k_res_comp": 0.0,
+
                     # --- Simulation Control ---
-                    "max_steps": 500000,
-                    "num_replicates": 24, # A good number for statistical analysis
-                    
-                    # --- Data Collection Strategy ---
-                    # We disable online logging. The AifMetricsManager will save the
-                    # entire final population state for high-resolution post-processing.
-                    "sector_metrics_dr": 0.0,
+                    "max_steps": 50_00_000,
+                    "num_replicates": 150,
+
+                    # --- Logging cadence ---
+                    "sector_metrics_dr": 1.0,
                     "sector_metrics_interval": 0,
+
+                    # --- Denoise / persistence (unchanged) ---
+                    "front_denoise_window": 5, "min_island_len": 3,
+                    "sid_iou_thresh": 0.15, "sid_center_delta": 0.10,
+
+                    # --- NEW: safe, unambiguous early-stop ---
+                    # Stops only when the (ever single) mutant lineage leaves the true front.
+                    "stop_on_front_extinction": True
+                    # Do NOT set tracked_root_sid or infer_tracked_root here.
                 },
                 "grid_params": {
-                    # These strings refer to the keys in PARAM_GRID above
                     "b_res": "aif_b_res_scan",
                     "sector_width_initial": "aif_initial_width_scan",
                 },
@@ -312,108 +311,6 @@ EXPERIMENTS = {
         },
     },
 
-"aif_online_trajectory_scan": {
-    "campaign_id": "aif_online_scan_v1",
-    "run_mode": "aif_width_analysis",
-    "hpc_params": {"time": "05:00:00", "mem": "16G", "sims_per_task": 4},
-    "sim_sets": {
-        "main": {
-            "base_params": {
-                # --- Initial Conditions ---
-                "initial_condition_type": "sector",
-                "initial_droplet_radius": 150,
-                # NOTE: 'num_sectors' isn't used by the engine for "sector" IC; safe to keep or remove.
-                "num_sectors": 1,
-
-                # --- Physics (No Rescue) ---
-                "b_sus": 1.0, "b_comp": 1.0, "k_res_comp": 0.0,
-
-                # --- Simulation Control ---
-                "max_steps": 1_00_00_000,
-                "num_replicates": 25,
-
-                # --- Logging cadence ---
-                "sector_metrics_dr": 1.0,
-                "sector_metrics_interval": 0,
-
-                # --- Denoise / persistence (unchanged) ---
-                "front_denoise_window": 5, "min_island_len": 3,
-                "sid_iou_thresh": 0.15, "sid_center_delta": 0.10,
-
-                # --- NEW: safe, unambiguous early-stop ---
-                # Stops only when the (ever single) mutant lineage leaves the true front.
-                "stop_on_front_extinction": True
-                # Do NOT set tracked_root_sid or infer_tracked_root here.
-            },
-            "grid_params": {
-                "b_res": "aif_b_res_scan",
-                "sector_width_initial": "aif_initial_width_scan",
-            },
-        }
-    },
-},
-
-
-
-"aif_paper_rimbands_calibrated": {
-    "campaign_id": "aif_rimbands_cal_v1",
-    "run_mode": "aif_width_analysis",
-    "hpc_params": {"time": "04:00:00", "mem": "4G", "sims_per_task": 80},
-    "sim_sets": {
-        "main": {
-            "base_params": {
-                # Paper-like many-clone setting
-                "initial_condition_type": "aif_front_bands",
-                "initial_droplet_radius": 365,   # ≈ 1827 μm / 5 μm per cell
-                "num_bands": 16,
-                "band_width": 5,                 # ≈ 25 μm
-                # Physics (constant selection s ≈ 0.013)
-                "b_sus": 1.0, "b_res": 0.987, "b_comp": 1.0, "k_res_comp": 0.0,
-                # --- KEY: Radius-aligned logging as per your plan ---
-                "sector_metrics_dr": 1.0,
-                "sector_metrics_interval": 0,
-                # --- "Repro knobs" from your plan ---
-                "front_denoise_window": 5, "min_island_len": 3,
-                "sid_iou_thresh": 0.15, "sid_center_delta": 0.10,
-                "max_steps": 350000,
-                "replicate": list(range(24))
-            },
-            "grid_params": {
-                "band_width": [4, 5, 6],   # 20, 25, 30 μm
-                "b_res": [0.985, 0.987, 0.990],
-            }
-        }
-    }
-},
-
-"aif_paper_singlesector_calibrated": {
-    "campaign_id": "aif_singlesector_cal_v1",
-    "run_mode": "aif_width_analysis",
-    "hpc_params": {"time": "04:30:00", "mem": "4G", "sims_per_task": 80},
-    "sim_sets": {
-        "single_sector": {
-            "base_params": {
-                "initial_condition_type": "sector",
-                "initial_droplet_radius": 400,
-                "num_sectors": 1,
-                "b_sus": 1.0, "b_res": 0.987, "b_comp": 1.0, "k_res_comp": 0.0,
-                # --- KEY: Radius-aligned logging as per your plan ---
-                "sector_metrics_dr": 1.0,
-                "sector_metrics_interval": 0,
-                # --- "Repro knobs" from your plan ---
-                "front_denoise_window": 5, "min_island_len": 3,
-                "sid_iou_thresh": 0.15, "sid_center_delta": 0.10,
-                "max_steps": 380000,
-                "replicate": list(range(24))
-            },
-            "grid_params": {
-                # widths in cells (μm = cells * 5): 20, 60, 120, 240, 360 μm
-                "sector_width_initial": [4, 12, 24, 48, 72],
-                "b_res": [0.985, 0.987, 0.990],
-            }
-        }
-    }
-},
 
     # =========================================================================
     # === DEBUGGING

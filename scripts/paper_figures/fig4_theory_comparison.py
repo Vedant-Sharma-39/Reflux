@@ -1,4 +1,4 @@
-# FILE: scripts/paper_figures/fig4_theory_vs_s_panels.py (Corrected with Averaging)
+# FILE: scripts/paper_figures/sup_fig_mean_field (Corrected with Averaging)
 #
 # Generates a multi-panel figure to demonstrate the robustness of the
 # mean-field theory across different selection strengths.
@@ -63,7 +63,7 @@ def main():
     )
     figure_dir = os.path.join(project_root, "figures")
     os.makedirs(figure_dir, exist_ok=True)
-    output_path = os.path.join(figure_dir, "fig4_theory_vs_s_panels.png")
+    output_path = os.path.join(figure_dir, "sup_fig_mean_field.png")
 
     try:
         df_raw = pd.read_csv(summary_path)
