@@ -1,56 +1,152 @@
-# Manuscript Outline: The Role of Reversibility in Spatial Bet-Hedging
-
-**Title:** The advantage of phenotypic switching in range expansions emerges from a crossover, not a critical transition
+````markdown
+# The Advantage of Phenotypic Switching in Range Expansions Emerges from a Crossover, Not a Critical Transition
 
 **Authors:** Vedant Sharma, et al.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Preprint](https://img.shields.io/badge/Preprint-bioRxiv-blue.svg)](https://www.biorxiv.org/) This repository contains the full source code for the large-scale agent-based model (ABM) and analysis scripts used in our manuscript. This work investigates the interplay between the physical nature of phase transitions and the biological fitness of spatial bet-hedging strategies.
 
 ---
 
 ### Abstract
-_(Your abstract here)_
+
+Phenotypic switching is a common bet-hedging strategy for surviving in fluctuating environments. While well-understood in well-mixed systems, in spatially structured populations undergoing range expansions, the physics of domain formation and local extinction introduce new dynamics. Previous work has shown that *irreversible* switching ($\phi = -1.0$) leads to a critical phase transition belonging to the Directed Percolation (DP) universality class. But what happens if the switch is *reversible*?
+
+Here, we use a large-scale, continuous-time agent-based model to investigate the interplay between switching reversibility, phase transition physics, and biological fitness. We demonstrate that introducing even slight reversibility ($\phi > -1.0$) fundamentally alters the system, changing the sharp, critical phase transition into a smooth crossover. We then show that this physical shift is the key to the biological advantage: the ability to recover from local extinctions in the crossover regime allows reversible strategies to achieve a significant fitness advantage in heterogeneous environments—an advantage that is completely absent in the critical, irreversible case. Finally, we show how optimal switching strategies (both rate, $k_{\text{total}}$, and bias, $\phi$) are fine-tuned by the statistical structure of the environment. Our work establishes that the biological benefit of spatial bet-hedging is an emergent property of the crossover physics, not a critical one.
 
 ---
 
-### Introduction
--   Microbial range expansions are a key paradigm for studying evolution in spatially structured populations.
--   Phenotypic switching (bet-hedging) is a known strategy for adapting to fluctuating environments.
--   Prior work (e.g., Skanata & Kussell) has established a theoretical framework for temporal bet-hedging, but the spatial component adds crucial new physics (memory, domain formation).
--   Work by Kuhr et al. has connected irreversible switching (`phi = -1.0`) in spatial models to the Directed Percolation (DP) universality class, a true phase transition.
--   **Key Question:** What happens when this switching is reversible (`phi > -1.0`)? How does the physical nature of the system's phase boundary relate to the biological advantage conferred by the strategy?
--   **Our Approach:** We use a large-scale agent-based model to systematically map the phase space of mutant invasion and directly measure the fitness of bet-hedging strategies in heterogeneous environments.
+### Key Findings
+
+![Simulation Animation](https://github.com/your-username/your-repo/blob/main/figures/simulation_comparison.gif)
+> *An animation from our agent-based model. (Left) An irreversible (`$\phi = -1.0$`) strategy suffers local extinctions (gray patches) that can never be recovered. (Right) A reversible (`$\phi = 0.0$`) strategy allows mutant (blue) sectors to be regenerated from the wild-type (gray) population, enabling long-term persistence and fitness.*
+
+1.  **Critical vs. Crossover:** Irreversible switching (`$\phi = -1.0$`) creates an absorbing state, leading to a sharp, critical phase transition. Reversible switching (`$\phi > -1.0$`) removes this absorbing state, resulting in a smooth crossover.
+2.  **Physics Enables Biology:** The biological advantage of bet-hedging (i.e., a fitness gain in fluctuating environments) is *only* present in the crossover regime. The critical system (`$\phi = -1.0$`) provides no fitness benefit, as locally extinct sectors are lost forever.
+3.  **Optimal Strategy:** The optimal switching bias (`$\phi_{\text{opt}}$`) is tuned to the environmental statistics, demonstrating a new layer of evolutionary adaptation.
 
 ---
 
-### Results
+### Installation
 
-#### 1. Switching Reversibility Transforms the Phase Boundary from Critical to Crossover
--   We first characterize the steady-state mutant density (`<ρ_M>`) in a homogeneous environment.
--   **[INSERT NEW FIGURE 2 HERE]**
--   **Figure 2a:** Shows that for irreversible switching (`phi = -1.0`), the system exhibits a sharp, step-like transition in `<ρ_M>` as a function of selection `s`, characteristic of a critical phase transition.
--   **Figure 2a (cont.):** As reversibility is introduced (`phi = -0.5, 0.0`), this transition becomes a smooth, gradual crossover.
--   **Conclusion:** The presence of a reverse switching pathway (M -> WT) removes the absorbing state (pure WT phase) and fundamentally changes the physics of the system.
+This project is written in Python 3. The core simulation is a continuous-time, event-driven model based on a Gillespie algorithm, and the analysis scripts use the standard scientific Python stack.
 
-#### 2. The Bet-Hedging Advantage is Enabled by the Crossover Regime
--   We next measure the fitness of switching strategies in a spatially heterogeneous environment (patches of favorable/unfavorable territory).
--   **Figure 2b:** Shows the relative fitness gain (speed of bet-hedger vs. best pure strategy).
--   **Figure 2b (cont.):** For irreversible switching (`phi = -1.0`), there is no fitness advantage. Once a mutant sector is lost, it can never be recovered.
--   **Figure 2b (cont.):** For reversible switching (`phi = 0.0`), a clear optimal switching rate `k_total` emerges that provides a significant fitness advantage (>1.0).
--   **Synthesis:** The biological advantage of bet-hedging is not a feature of the critical (`phi = -1.0`) system. It is an emergent property of the crossover regime, where the ability to recover from local extinction events is crucial.
+```bash
+# 1. Clone the repository
+git clone [https://github.com/vsharma/spatial-bet-hedging.git](https://github.com/vsharma/spatial-bet-hedging.git)  # <-- TODO: Update with actual repo URL
+cd spatial-bet-hedging
 
-#### 3. Optimal Switching Strategies Adapt to Environmental Asymmetry
--   We then explored how the optimal strategy adapts to predictable, asymmetric environments.
--   **[INSERT NEW FIGURE 3 HERE]**
--   **Figure 3a:** Shows that the optimal switching bias (`phi_opt`) is tuned to the environmental statistics. When the environment is mostly favorable to WT (90_30), a positive (purging) bias is optimal. When mostly favorable to M (30_90), a negative (polluting) bias is optimal.
--   **Figure 3b:** Shows that these adapted, asymmetric strategies achieve a higher maximal fitness than the symmetric (`phi=0`) strategy in a symmetric environment.
--   **Conclusion:** In predictable environments, evolution can fine-tune the switching dynamics to match the environmental structure, leading to significant fitness gains. The "scrambled" control shows that this advantage is lost when predictability is removed.
+# 2. Create and activate a virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate
 
----
+# 3. Install required packages
+pip install -r requirements.txt
+````
 
-### Discussion
--   Recap the main finding: The crossover nature of reversible switching is the key physical principle enabling spatial bet-hedging.
--   Connect to theory: Our results provide a quantitative, spatial extension to the temporal models of bet-hedging. We show how spatial memory (the persistence of sectors) adds a new dimension to the problem.
--   The cost of memory and the timescale of recovery (`τ_recovery` from your new Figure 4) can be discussed here as the physical mechanism limiting how fast the optimal `k_total` can be.
--   Implications for cooperative strategies (`phi < 0`): Our work shows that "polluting" is not just altruism; it's a winning strategy in environments that are biased against the "polluter."
--   Future work...
+The main dependencies are listed in `requirements.txt` and include:
 
----
+  * `numpy`
+  * `pandas`
+  * `scipy`
+  * `matplotlib`
+  * `seaborn`
+  * `tqdm`
+
+-----
+
+### How to Reproduce Our Results
+
+You can reproduce all figures from the paper by following these steps.
+
+**Note:** Running the full simulation sweeps is computationally intensive and will generate gigabytes of data. Pre-computed, aggregated data is provided in `data/processed/`.
+
+#### 1\. (Optional) Run Full Simulation Sweeps
+
+To run the simulations from scratch, use the `run_sweep.py` script. The campaign configurations are defined in `src/config.py`.
+
+```bash
+# Run the homogeneous environment sweep (for Fig 2a)
+python src/run_sweep.py --campaign homogeneous_sweep
+
+# Run the heterogeneous environment sweep (for Fig 2b & 3)
+python src/run_sweep.py --campaign heterogeneous_sweep
+```
+
+  * Raw simulation output will be saved to `data/raw/`.
+
+#### 2\. (Optional) Aggregate Raw Data
+
+If you ran your own simulations, you must aggregate the raw output into tidy CSV files for plotting.
+
+```bash
+# Process all campaigns
+python src/analysis/aggregate_data.py --campaign all
+```
+
+  * Processed data will be saved to `data/processed/`.
+
+#### 3\. Generate All Paper Figures
+
+This will use the processed data (either the ones you just generated or the ones included in the repo) to create all figures from the manuscript.
+
+```bash
+# This script will run all plotting scripts in the /scripts/ folder
+python scripts/generate_all_figures.py
+```
+
+  * All figures will be saved to the `figures/` directory.
+  * To generate a specific figure (e.g., Figure 2), you can run its script directly:
+    ```bash
+    python scripts/plot_fig2_crossover.py
+    ```
+
+-----
+
+### Repository Structure
+
+```
+spatial-bet-hedging/
+├── data/
+│   ├── raw/                # Raw simulation output (gitignored)
+│   └── processed/          # Aggregated .csv files for plotting
+├── figures/                # Final figures for the paper (.pdf, .png)
+├── scripts/                # Python scripts to generate paper figures
+│   ├── generate_all_figures.py
+│   ├── plot_fig1_model_schematic.py
+│   ├── plot_fig2_crossover.py
+│   ├── plot_fig3_asymmetry.py
+│   └── ...
+├── src/                    # Core simulation and analysis code
+│   ├── analysis/           # Scripts for data aggregation (aggregate_data.py)
+│   ├── core/               # ABM logic, Gillespie algorithm, lattice, etc.
+│   ├── io/                 # Data loading/saving utilities
+│   ├── config.py           # Defines simulation parameters for all campaigns
+│   └── run_sweep.py        # Main script to launch simulation batches
+├── requirements.txt        # Python dependencies
+└── README.md               # This file
+```
+
+-----
+
+### Citation
+
+If you use this code or our findings in your research, please cite our paper:
+
+```bibtex
+@article{Sharma2025Crossover,
+  title   = {The advantage of phenotypic switching in range expansions emerges from a crossover, not a critical transition},
+  author  = {Sharma, Vedant and [Co-author 1] and [Co-author 2] and Wang, Hao},
+  journal = {bioRxiv},
+  year    = {2025},
+  doi     = {10.1101/TODO},
+  url     = {[https://www.biorxiv.org/content/TODO](https://www.biorxiv.org/content/TODO)}
+}
+```
+
+### License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+
+```
+```
