@@ -1,47 +1,48 @@
-````markdown
-# The Advantage of Phenotypic Switching in Range Expansions Emerges from a Crossover, Not a Critical Transition
+# Fitness at the Expanding Front: An Exploration-Exploitation Trade-off in Phenotypic Switching
 
-**Authors:** Vedant Sharma, et al.
+**Authors:** Vedant Sharma and Hao Wang
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Preprint](https://img.shields.io/badge/Preprint-bioRxiv-blue.svg)](https://www.biorxiv.org/) This repository contains the full source code for the large-scale agent-based model (ABM) and analysis scripts used in our manuscript. This work investigates the interplay between the physical nature of phase transitions and the biological fitness of spatial bet-hedging strategies.
+[![Preprint](https://img.shields.io/badge/Preprint-bioRxiv-blue.svg)](https://www.biorxiv.org/) 
+
+This repository contains the full source code for the large-scale agent-based model (ABM) and analysis scripts used in our manuscript. This work investigates how phenotypic switching strategies determine fitness at the expanding front of a population in a heterogeneous environment.
 
 ---
 
 ### Abstract
 
-Phenotypic switching is a common bet-hedging strategy for surviving in fluctuating environments. While well-understood in well-mixed systems, in spatially structured populations undergoing range expansions, the physics of domain formation and local extinction introduce new dynamics. Previous work has shown that *irreversible* switching ($\phi = -1.0$) leads to a critical phase transition belonging to the Directed Percolation (DP) universality class. But what happens if the switch is *reversible*?
-
-Here, we use a large-scale, continuous-time agent-based model to investigate the interplay between switching reversibility, phase transition physics, and biological fitness. We demonstrate that introducing even slight reversibility ($\phi > -1.0$) fundamentally alters the system, changing the sharp, critical phase transition into a smooth crossover. We then show that this physical shift is the key to the biological advantage: the ability to recover from local extinctions in the crossover regime allows reversible strategies to achieve a significant fitness advantage in heterogeneous environments—an advantage that is completely absent in the critical, irreversible case. Finally, we show how optimal switching strategies (both rate, $k_{\text{total}}$, and bias, $\phi$) are fine-tuned by the statistical structure of the environment. Our work establishes that the biological benefit of spatial bet-hedging is an emergent property of the crossover physics, not a critical one.
+The exploration-exploitation trade-off is a central challenge for organisms in fluctuating environments. Phenotypic switching is a key bet-hedging mechanism used to navigate this trade-off, yet its dynamics in spatially structured populations remain poorly understood. Here, we use a continuous-time, event-driven model to investigate how phenotypic switching strategies determine fitness at the expanding front of a population in a heterogeneous environment. We find that while an optimal, intermediate switching rate maximizes the speed of expansion, the reversibility of the switch is a master regulator of the system's evolutionary trajectory. Irreversible "specialist" strategies are fragile, whereas reversible switching confers a dramatic fitness advantage by allowing the population to regenerate resilient generalist phenotypes. This strategic choice governs the location of the phase transition between specialist persistence and extinction. We also incorporate the intrinsic biological cost of adaptation—a phenotypic switching lag—and show it imposes a hard constraint on fitness, forcing the optimal strategy to shift toward slower, more conservative switching rates. Finally, we show that spatial structure creates emergent phenomena, such as collective protection, where clustering of specialist cells significantly enhances survival, and we show that an experimental paradox of apparent stagnancy of deleterious patches can be explained as observational bias. This work bridges the classic exploration-exploitation trade-off with the biophysical costs of adaptation and the physics of range expansions, providing a robust framework for understanding fitness in complex biological systems.
 
 ---
 
 ### Key Findings
 
-![Simulation Animation](https://github.com/your-username/your-repo/blob/main/figures/simulation_comparison.gif)
-> *An animation from our agent-based model. (Left) An irreversible (`$\phi = -1.0$`) strategy suffers local extinctions (gray patches) that can never be recovered. (Right) A reversible (`$\phi = 0.0$`) strategy allows mutant (blue) sectors to be regenerated from the wild-type (gray) population, enabling long-term persistence and fitness.*
+![Simulation Visualization](presentation_figures/narrative_schematic_hex_with_sidebar.png)
+> *Schematic comparing irreversible vs. reversible switching in a fluctuating environment. (Left) An irreversible strategy (`$\phi = -1.0$`) suffers permanent loss of the WT phenotype in a hostile patch. (Right) A reversible strategy (`$\phi = 0.0$`) allows the WT phenotype to be regenerated from the mutant population, enabling re-adaptation.*
 
-1.  **Critical vs. Crossover:** Irreversible switching (`$\phi = -1.0$`) creates an absorbing state, leading to a sharp, critical phase transition. Reversible switching (`$\phi > -1.0$`) removes this absorbing state, resulting in a smooth crossover.
-2.  **Physics Enables Biology:** The biological advantage of bet-hedging (i.e., a fitness gain in fluctuating environments) is *only* present in the crossover regime. The critical system (`$\phi = -1.0$`) provides no fitness benefit, as locally extinct sectors are lost forever.
-3.  **Optimal Strategy:** The optimal switching bias (`$\phi_{\text{opt}}$`) is tuned to the environmental statistics, demonstrating a new layer of evolutionary adaptation.
+1.  **Optimal Switching Rate:** An optimal, intermediate switching rate maximizes the population's expansion speed by balancing exploration of new environmental patches and exploitation of favorable ones.
+2.  **Advantage of Reversibility:** Reversible switching confers a significant fitness advantage over irreversible strategies, particularly under strong selection, by allowing the population to regenerate generalist phenotypes and avoid getting trapped in a maladapted state.
+3.  **Cost of Adaptation (Lag):** Incorporating a phenotypic switching lag (a period of non-reproduction during the switch) imposes a hard constraint on fitness and shifts the optimal strategy toward slower, more conservative switching rates.
+4.  **Collective Protection:** Spatial clustering of disadvantaged specialist cells provides a survival advantage (collective protection) by minimizing the boundary exposed to selection, especially under strong negative selection.
+5.  **Apparent Stagnancy Explained:** The observed stagnancy or slow shrinkage of deleterious mutant patches in experiments can be explained by observational bias conditioned on lineage survival.
 
 ---
 
 ### Installation
 
-This project is written in Python 3. The core simulation is a continuous-time, event-driven model based on a Gillespie algorithm, and the analysis scripts use the standard scientific Python stack.
+This project is written in Python 3. The core simulation is a continuous-time, event-driven model based on a Gillespie algorithm, implemented on a hexagonal lattice. Analysis scripts use the standard scientific Python stack.
 
 ```bash
 # 1. Clone the repository
-git clone [https://github.com/vsharma/spatial-bet-hedging.git](https://github.com/vsharma/spatial-bet-hedging.git)  # <-- TODO: Update with actual repo URL
-cd spatial-bet-hedging
+# git clone [YOUR_REPO_URL_HERE] 
+# cd [YOUR_REPO_NAME]
 
 # 2. Create and activate a virtual environment (recommended)
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # On Windows use `venv\Scripts\activate`
 
 # 3. Install required packages
-pip install -r requirements.txt
+pip install -r requirements.txt 
 ````
 
 The main dependencies are listed in `requirements.txt` and include:
@@ -52,101 +53,132 @@ The main dependencies are listed in `requirements.txt` and include:
   * `matplotlib`
   * `seaborn`
   * `tqdm`
+  * `typer`
+  * `numba` (for accelerating the event tree updates)
 
 -----
 
 ### How to Reproduce Our Results
 
-You can reproduce all figures from the paper by following these steps.
+You can manage simulation campaigns and generate figures using the `manage.py` script, which provides a command-line interface. Use `python3 manage.py --help` for details on commands.
 
-**Note:** Running the full simulation sweeps is computationally intensive and will generate gigabytes of data. Pre-computed, aggregated data is provided in `data/processed/`.
+**Note:** Running the full simulation sweeps is computationally intensive and requires an HPC environment with Slurm (or modification of the submission scripts). Pre-computed, aggregated data may be provided in the `data/` directory (check `.gitignore` to see if `data/` is tracked).
 
-#### 1\. (Optional) Run Full Simulation Sweeps
+#### 1\. Generate Simulation Tasks
 
-To run the simulations from scratch, use the `run_sweep.py` script. The campaign configurations are defined in `src/config.py`.
-
-```bash
-# Run the homogeneous environment sweep (for Fig 2a)
-python src/run_sweep.py --campaign homogeneous_sweep
-
-# Run the heterogeneous environment sweep (for Fig 2b & 3)
-python src/run_sweep.py --campaign heterogeneous_sweep
-```
-
-  * Raw simulation output will be saved to `data/raw/`.
-
-#### 2\. (Optional) Aggregate Raw Data
-
-If you ran your own simulations, you must aggregate the raw output into tidy CSV files for plotting.
+The `manage.py launch` command first checks the experiment definitions in `src/config.py` against the master task list (`data/<campaign_id>/<campaign_id>_master_tasks.jsonl`) and adds any missing tasks defined by the parameter grids.
 
 ```bash
-# Process all campaigns
-python src/analysis/aggregate_data.py --campaign all
+# Example: Generate tasks for the main bet-hedging experiment
+python3 manage.py launch bet_hedging_final
 ```
 
-  * Processed data will be saved to `data/processed/`.
+#### 2\. Submit Simulation Jobs (HPC/Slurm)
 
-#### 3\. Generate All Paper Figures
-
-This will use the processed data (either the ones you just generated or the ones included in the repo) to create all figures from the manuscript.
+The `manage.py launch` command will then identify which tasks have not yet been completed (by checking against the aggregated summary CSV) and generate a temporary `_missing_tasks.jsonl` file. It will prompt you to submit these tasks via `sbatch` using the `scripts/run_chunk.sh` wrapper, which in turn calls the `src/worker.py` script for each simulation instance.
 
 ```bash
-# This script will run all plotting scripts in the /scripts/ folder
-python scripts/generate_all_figures.py
+# Example: Launch missing jobs for the bet-hedging experiment
+# (Answer 'yes' when prompted to submit)
+python3 manage.py launch bet_hedging_final 
 ```
 
-  * All figures will be saved to the `figures/` directory.
-  * To generate a specific figure (e.g., Figure 2), you can run its script directly:
-    ```bash
-    python scripts/plot_fig2_crossover.py
-    ```
+  * Raw simulation output (summary `.jsonl` files) will be saved to `data/<campaign_id>/raw/`.
+  * Bulkier data (like population snapshots or trajectories) are saved to separate directories (e.g., `data/<campaign_id>/trajectories/`).
+  * Slurm logs are saved to `slurm_logs/`.
+
+#### 3\. Consolidate Raw Data
+
+After jobs complete, consolidate the raw `.jsonl` output into a single aggregated CSV file for analysis and plotting. This also moves trajectory/population data to their final locations.
+
+```bash
+# Example: Consolidate data for the main bet-hedging campaign
+python3 manage.py consolidate fig3_bet_hedging_final 
+```
+
+  * Aggregated data is saved to `data/<campaign_id>/analysis/<campaign_id>_summary_aggregated.csv`.
+  * Raw files in `data/<campaign_id>/raw/` are deleted after successful consolidation.
+
+#### 4\. Generate Paper Figures
+
+The plotting scripts reside in `scripts/paper_figures/`. You can generate specific figures using the `manage.py plot` command (which needs to be implemented in `manage.py` based on your plotting scripts) or run the scripts directly.
+
+```bash
+# Example: Generate Figure 3 (Reversibility)
+python3 scripts/paper_figures/fig_reversibility.py
+
+# Example: Generate Figure 5 (Clustering)
+python3 scripts/paper_figures/fig_clustering.py
+
+# Example: Generate Figure 6 (Conditioned Mean / Stagnancy)
+python3 scripts/paper_figures/fig_linear_radial_comparison.py 
+
+# (Add commands or direct script calls for other figures as needed)
+```
+
+  * Figures will be saved to the `figures/` directory.
 
 -----
 
 ### Repository Structure
 
 ```
-spatial-bet-hedging/
-├── data/
-│   ├── raw/                # Raw simulation output (gitignored)
-│   └── processed/          # Aggregated .csv files for plotting
-├── figures/                # Final figures for the paper (.pdf, .png)
-├── scripts/                # Python scripts to generate paper figures
-│   ├── generate_all_figures.py
-│   ├── plot_fig1_model_schematic.py
-│   ├── plot_fig2_crossover.py
-│   ├── plot_fig3_asymmetry.py
+reflux/
+├── data/                   # Simulation output (potentially gitignored)
+│   ├── <campaign_id>/
+│   │   ├── analysis/       # Aggregated summary CSVs
+│   │   ├── populations/    # Final population state snapshots (.json.gz)
+│   │   ├── trajectories/   # Trajectory data (.json.gz)
+│   │   ├── timeseries/     # Timeseries data (.json.gz)
+│   │   ├── raw/            # Temporary raw output from workers (.jsonl)
+│   │   └── *_master_tasks.jsonl # Complete list of tasks for the campaign
 │   └── ...
+├── figures/                # Final figures for the paper (.pdf, .png, .eps)
+├── presentation_figures/   # Figures specifically for presentations
+├── scripts/                # Python scripts
+│   ├── paper_figures/      # Scripts to generate figures for the manuscript
+│   ├── presentation_figures/ # Scripts to generate presentation assets
+│   ├── utils/              # Helper scripts (task generation, analysis workers)
+│   ├── run_chunk.sh        # Slurm job script to run a batch of simulations
+│   └── ...                 # Other utility/visualization scripts
 ├── src/                    # Core simulation and analysis code
-│   ├── analysis/           # Scripts for data aggregation (aggregate_data.py)
-│   ├── core/               # ABM logic, Gillespie algorithm, lattice, etc.
-│   ├── io/                 # Data loading/saving utilities
-│   ├── config.py           # Defines simulation parameters for all campaigns
-│   └── run_sweep.py        # Main script to launch simulation batches
+│   ├── core/               # ABM logic, Gillespie, hex grid, models, metrics
+│   ├── io/                 # Data loading utilities
+│   ├── utils/              # Analysis helper functions
+│   ├── config.py           # Defines simulation parameters & experiments
+│   └── worker.py           # Script executed by HPC jobs to run a single sim
+├── diagram_assets/         # Source files for diagrams (e.g., .svg)
+├── slurm_logs/             # Slurm output logs (gitignored)
+├── venv/                   # Virtual environment files (gitignored)
+├── .gitignore              # Specifies intentionally untracked files
+├── LICENSE                 # License file (e.g., MIT)
+├── manage.py               # Main CLI for managing campaigns
+├── Makefile                # Convenience wrapper for manage.py commands
 ├── requirements.txt        # Python dependencies
-└── README.md               # This file
+└── readme.md               # This file
 ```
 
 -----
 
 ### Citation
 
-If you use this code or our findings in your research, please cite our paper:
+If you use this code or our findings in your research, please cite our preprint:
 
 ```bibtex
-@article{Sharma2025Crossover,
-  title   = {The advantage of phenotypic switching in range expansions emerges from a crossover, not a critical transition},
-  author  = {Sharma, Vedant and [Co-author 1] and [Co-author 2] and Wang, Hao},
+@article{Sharma2025FitnessFront,
+  title   = {Fitness at the Expanding Front: An Exploration-Exploitation Trade-off in Phenotypic Switching},
+  author  = {Sharma, Vedant and Wang, Hao},
   journal = {bioRxiv},
   year    = {2025},
-  doi     = {10.1101/TODO},
-  url     = {[https://www.biorxiv.org/content/TODO](https://www.biorxiv.org/content/TODO)}
+  month   = {Oct},
+  day     = {28},
+  note    = {Preprint},
+  url     = {[https://www.biorxiv.org/](https://www.biorxiv.org/)} # <-- TODO: Add actual bioRxiv URL/DOI when available
 }
 ```
 
+*(Please update the URL/DOI once the preprint is available)*
+
 ### License
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
-
-```
-```
+This project is licensed under the MIT License.
