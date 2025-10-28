@@ -116,8 +116,8 @@ def main():
     figure_dir = os.path.join(project_root, "figures")
     os.makedirs(figure_dir, exist_ok=True)
     # --- CHANGE: Output filenames ---
-    output_path_pdf = os.path.join(figure_dir, "fig3_adaptation_analysis.pdf")
-    output_path_eps = os.path.join(figure_dir, "fig3_adaptation_analysis.eps")
+    output_path_pdf = os.path.join(figure_dir, "fig_reversibility.pdf")
+    output_path_eps = os.path.join(figure_dir, "fig_reversibility.eps")
     print(f"\nGenerating definitive Figure 3 from campaign: {campaign_id}")
 
     # --- CHANGE: Plotting setup for publication ---

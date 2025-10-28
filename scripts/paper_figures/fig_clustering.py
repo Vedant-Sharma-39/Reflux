@@ -54,8 +54,8 @@ def main():
 
     figure_dir = PROJECT_ROOT / "figures"
     figure_dir.mkdir(exist_ok=True)
-    output_path_pdf = figure_dir / "fig5_fragmentation_benefit.pdf"
-    output_path_eps = figure_dir / "fig5_fragmentation_benefit.eps"
+    output_path_pdf = figure_dir / "fig_clustering.pdf"
+    output_path_eps = figure_dir / "fig_clustering.eps"
 
     # --- Data Processing ---
     unique_sizes = sorted(df_full["initial_mutant_patch_size"].unique())

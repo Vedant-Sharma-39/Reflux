@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib
+from scipy.ndimage import gaussian_filter # <-- IMPORT FOR SMOOTHING
 
 # --- Publication Settings ---
 matplotlib.rcParams["pdf.fonttype"] = 42
@@ -35,8 +36,12 @@ def find_nearest(array, value):
 
 
 def calculate_susceptibility(sorted_pivot_table):
-    """Calculates susceptibility by taking the gradient along the 's' axis."""
-    sus_values = np.abs(np.gradient(sorted_pivot_table.values, axis=0))
+    """
+    Calculates susceptibility by taking the gradient along the 'k' axis (axis=1),
+    which is the horizontal axis of the heatmap.
+    """
+    # --- IMPROVED LOGIC: Calculate gradient along axis=1 (k_total) ---
+    sus_values = np.abs(np.gradient(sorted_pivot_table.values, axis=1))
     return pd.DataFrame(
         sus_values, index=sorted_pivot_table.index, columns=sorted_pivot_table.columns
     )
@@ -67,9 +72,8 @@ def main():
     )
     figure_dir = os.path.join(project_root, "figures")
     os.makedirs(figure_dir, exist_ok=True)
-    # --- CHANGE: Output filenames updated to PDF and EPS ---
-    output_path_pdf = os.path.join(figure_dir, "fig2_phase_diagram_overview.pdf")
-    output_path_eps = os.path.join(figure_dir, "fig2_phase_diagram_overview.eps")
+    output_path_pdf = os.path.join(figure_dir, "fig_phase_diagram_overview.pdf")
+    output_path_eps = os.path.join(figure_dir, "fig_phase_diagram_overview.eps")
 
     print(f"Generating definitive Figure 2 (2x2) from campaign: {campaign_id}")
     try:
@@ -83,18 +87,13 @@ def main():
 
     df["s"] = df["b_m"] - 1.0
 
-    # --- CHANGE: Use 'paper' context for smaller fonts ---
     sns.set_theme(style="ticks", context="paper")
-    # --- CHANGE: Set figure size to 2-column width (17.8cm) ---
     fig, axes = plt.subplots(
         2, 2, figsize=(cm_to_inch(17.8), cm_to_inch(16)), constrained_layout=True
     )
-    fig.suptitle(
-        "Switching Bias is a Master Regulator of the Mutant Invasion Phase",
-        # --- CHANGE: Font size within 6-12pt range ---
-        fontsize=12,
-        y=1.03,
-    )
+    
+    # --- REMOVED: suptitle removed to match reference image ---
+    # fig.suptitle(...)
 
     phi_all = np.sort(df["phi"].unique())
 
@@ -112,39 +111,65 @@ def main():
         rho_pivot = df_slice.pivot_table(
             index="s", columns="k_total", values="avg_rho_M"
         ).sort_index(ascending=False)
+        
+        if rho_pivot.empty:
+            ax.text(0.5, 0.5, f"No data for phi={phi}", ha='center', va='center')
+            continue
+            
         if sample_pivot is None:
             sample_pivot = rho_pivot
 
         vmax_theoretical = (1 - phi) / 2.0 if phi >= -1 else 1.0
         vmax_plot = max(vmax_theoretical, 0.01)
 
-        cbar_label = r"Final Mutant Fraction, $\langle\rho_M\rangle$"
+        cbar_label = r"Avg. Mutant Fraction ($\langle\rho_M\rangle$)"
         cbar_kws = {"label": cbar_label}
+        
+        # --- IMPROVED: Colormap changed to RdBu_r to match reference ---
         sns.heatmap(
             rho_pivot,
             ax=ax,
-            cmap="YlGnBu",
+            cmap="RdBu_r", # <-- CHANGED
             vmin=0,
             vmax=vmax_plot,
             cbar=True,
             cbar_kws=cbar_kws,
         )
         ax.set_title(title, fontsize=10)
-        # --- CHANGE: Font size for cbar label ---
-        ax.figure.axes[-1].yaxis.label.set_size(8)
+        ax.figure.axes[-1].yaxis.label.set_size(8) # cbar label
 
     ax_d = axes[1, 1]
     line_phis = [find_nearest(phi_all, p) for p in [-1.0, 0.0, 0.5]]
+    
+    # --- CHANGE: Palette changed to match reference (dark blue -> green) ---
     palette = sns.color_palette("viridis", n_colors=len(line_phis))
 
     for i, phi in enumerate(line_phis):
-        df_slice = df[np.isclose(df["phi"], phi)]
+        # --- FIX: Add .copy() to prevent SettingWithCopyWarning ---
+        df_slice = df[np.isclose(df["phi"], phi)].copy()
+        
+        # We need to pivot on log_k for evenly spaced gradient calculation
         df_slice["log10_k_total"] = np.log10(df_slice["k_total"])
         rho_pivot_log = df_slice.pivot_table(
             index="s", columns="log10_k_total", values="avg_rho_M"
         ).sort_index(ascending=False)
-        sus_pivot = calculate_susceptibility(rho_pivot_log)
+        
+        if rho_pivot_log.empty:
+            continue
+            
+        # --- NEW: Smooth the data before taking gradient ---
+        # Apply a Gaussian filter. Sigma controls the amount of smoothing.
+        smoothed_data = gaussian_filter(rho_pivot_log.values, sigma=1.0)
+        smoothed_pivot = pd.DataFrame(
+            smoothed_data, 
+            index=rho_pivot_log.index, 
+            columns=rho_pivot_log.columns
+        )
 
+        # --- Calculate susceptibility on SMOOTHED data ---
+        sus_pivot = calculate_susceptibility(smoothed_pivot)
+
+        # Find the log_k column that has the max gradient for each s row
         boundary_log_k = sus_pivot.idxmax(axis=1)
         boundary_k = 10**boundary_log_k
 
@@ -159,42 +184,45 @@ def main():
         )
 
     ax_d.set_xscale("log")
-    # --- CHANGE: Font sizes ---
     ax_d.set_title("(D) Phase Boundary Shifts with Bias", fontsize=10)
-    ax_d.set_xlabel("Critical Switching Rate, $k_c$", fontsize=8)
-    ax_d.set_ylabel("Selection Strength, $s$", fontsize=8)
-    ax_d.legend(title="Switching Bias", fontsize=7, title_fontsize=8)
+    ax_d.set_xlabel("Critical Switching Rate ($k_c$)", fontsize=8) # Match ref
+    ax_d.set_ylabel("Selection Strength ($s$)", fontsize=8)
+    ax_d.legend(title="Switching Bias ($\phi$)", fontsize=7, title_fontsize=8) # Match ref
     ax_d.grid(True, which="both", ls=":")
     ax_d.tick_params(axis="both", which="major", labelsize=7)
 
+    # --- IMPROVED: Clean, log-spaced tick labels for heatmaps ---
     if sample_pivot is not None:
-        y_labels = [f"{s:.2f}" for s in sample_pivot.index]
-        x_labels_full = [
-            f"{k:.3g}".rstrip("0").rstrip(".") for k in sample_pivot.columns
-        ]
+        # X-axis (k_total)
+        x_vals = sample_pivot.columns
+        x_ticks_to_show = np.array([1e-2, 1e-1, 1e0, 1e1, 1e2])
+        x_tick_indices = x_vals.get_indexer(x_ticks_to_show, method='nearest')
+        x_tick_labels = [f"$10^{{{int(np.log10(v))}}}$" for v in x_ticks_to_show]
+        # Ensure we don't show ticks for data that doesn't exist
+        valid_x_indices = [i for i in x_tick_indices if i != -1]
+        valid_x_labels = [label for i, label in zip(x_tick_indices, x_tick_labels) if i != -1]
+        
+        # Y-axis (s)
+        y_vals = sample_pivot.index
+        y_ticks_to_show = np.array([0.0, -0.2, -0.4, -0.7, -0.9])
+        y_tick_indices = y_vals.get_indexer(y_ticks_to_show, method='nearest')
+        y_tick_labels = [f"{v:.2f}" for v in y_ticks_to_show]
+        valid_y_indices = [i for i in y_tick_indices if i != -1]
+        valid_y_labels = [label for i, label in zip(y_tick_indices, y_tick_labels) if i != -1]
 
-        # --- IMPROVEMENT: Create sparse x-tick labels to reduce clutter ---
-        label_frequency = 4  # Show one label for every 4 ticks.
-        num_labels = len(x_labels_full)
-        x_labels_sparse = []
-        for i, label in enumerate(x_labels_full):
-            # Show label if it's the first, the last, or on the desired frequency.
-            if (i % label_frequency == 0) or (i == num_labels - 1):
-                x_labels_sparse.append(label)
-            else:
-                x_labels_sparse.append("")
 
         for ax in heatmap_axes:
-            # --- CHANGE: Font sizes ---
-            ax.set_xlabel("Switching Rate, $k$", fontsize=8)
-            ax.set_ylabel("Selection Strength, $s$", fontsize=8)
-            ax.set_yticks(np.arange(len(y_labels)) + 0.5)
-            ax.set_yticklabels(y_labels, rotation=0, fontsize=7)
-            ax.set_xticks(np.arange(len(x_labels_full)) + 0.5)
-            # Use the improved, sparse labels
-            ax.set_xticklabels(x_labels_sparse, rotation=45, ha="right", fontsize=7)
+            ax.set_xlabel("Switching Rate ($k_{\mathrm{total}}$)", fontsize=8) # Match ref
+            ax.set_ylabel("Selection Strength ($s$)", fontsize=8)
+            
+            # --- FIX: Convert list to numpy array before adding float ---
+            ax.set_yticks(np.array(valid_y_indices) + 0.5)
+            ax.set_yticklabels(valid_y_labels, rotation=0, fontsize=7)
+            
+            # --- FIX: Convert list to numpy array before adding float ---
+            ax.set_xticks(np.array(valid_x_indices) + 0.5)
+            ax.set_xticklabels(valid_x_labels, rotation=0, ha="center", fontsize=7)
 
-    # --- CHANGE: Save to PDF and EPS ---
     plt.savefig(output_path_pdf, bbox_inches="tight")
     plt.savefig(output_path_eps, bbox_inches="tight")
     print(f"\nDefinitive Figure 2 saved to: {output_path_pdf} and {output_path_eps}")
@@ -202,3 +230,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

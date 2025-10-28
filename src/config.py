@@ -177,6 +177,7 @@ EXPERIMENTS = {
             }
         },
     },
+    
     "bet_hedging_final": {
         "campaign_id": "fig3_bet_hedging_final",
         "run_mode": "bet_hedging_converged",
@@ -242,7 +243,53 @@ EXPERIMENTS = {
             }
         },
     },
-
+    
+    "inherent_cost_fitness": {
+        "campaign_id": "fig_inherent_cost_fitness",
+        "run_mode": "bet_hedging_converged",
+        "hpc_params": {"time": "10:00:00", "mem": "2G", "sims_per_task": 20},
+        "sim_sets": {
+            "main_scan": {
+                "base_params": {
+                    "width": 256,
+                    "length": 16384,
+                    "initial_condition_type": "mixed",
+                    "num_replicates": 16,
+                    "max_cycles": 50,
+                    "convergence_window_cycles": 5,
+                    "convergence_threshold": 0.01,
+                },
+                "grid_params": {
+                    "b_m": "bm_final_wide",
+                    "phi": "phi_final_full",
+                    "k_total": "k_total_final_log",
+                    "env_definition": [
+                        {
+                            "name": "inherent_cost_30w",
+                            "patches": [
+                                {"id": 0, "width": 30, "params": {"b_wt": 1.0}},
+                                {"id": 1, "width": 30, "params": {"b_wt": 0.0}},
+                            ],
+                        },
+                        {
+                            "name": "inherent_cost_60w",
+                            "patches": [
+                                {"id": 0, "width": 60, "params": {"b_wt": 1.0}},
+                                {"id": 1, "width": 60, "params": {"b_wt": 0.0}},
+                            ],
+                        },
+                        {
+                            "name": "inherent_cost_120w",
+                            "patches": [
+                                {"id": 0, "width": 120, "params": {"b_wt": 1.0}},
+                                {"id": 1, "width": 120, "params": {"b_wt": 0.0}},
+                            ],
+                        },
+                    ],
+                },
+            }
+        },
+    },
 
     "homogeneous_fitness_cost": {
         "campaign_id": "homogeneous_fitness_cost",
@@ -333,6 +380,7 @@ EXPERIMENTS = {
             }
         },
     },
+    
     "debug_fragmentation_viz": {
         "campaign_id": "debug_fragmentation_viz",
         "run_mode": "visualization",
@@ -349,6 +397,7 @@ EXPERIMENTS = {
             }
         },
     },
+    
     "deleterious_invasion_dynamics": {
         "campaign_id": "deleterious_invasion_dynamics",
         "run_mode": "fixation_analysis",
@@ -372,33 +421,33 @@ EXPERIMENTS = {
         },
     },
     
-"debug_speed_tracker": {
-    "campaign_id": "debug_speed_tracker",
-    # This run_mode ensures the correct tracker would be selected by the worker
-    "run_mode": "bet_hedging_converged",
-    "sim_sets": {
-        "main": {
-            "base_params": {
-                "width": 128,
-                "length": 2048, # A bit longer to allow for a few cycles
-                "initial_condition_type": "patch",
-                "initial_mutant_patch_size": 64,
-                "env_definition": "debug_viz_refuge", # Has a cycle length of 70
-                "b_m": 0.8,
-                "phi": 0.0,
-                "k_total": 10, # A moderate switching rate
-                # A large lag that will have a very clear impact on speed
-                "switching_lag_duration":10,
-            },
-            # These are the parameters for the tracker itself
-            "tracker_params": {
-                "max_cycles": 10,
-                "convergence_window_cycles": 3,
-                "convergence_threshold": 0.01,
+    "debug_speed_tracker": {
+        "campaign_id": "debug_speed_tracker",
+        # This run_mode ensures the correct tracker would be selected by the worker
+        "run_mode": "bet_hedging_converged",
+        "sim_sets": {
+            "main": {
+                "base_params": {
+                    "width": 128,
+                    "length": 2048, # A bit longer to allow for a few cycles
+                    "initial_condition_type": "patch",
+                    "initial_mutant_patch_size": 64,
+                    "env_definition": "debug_viz_refuge", # Has a cycle length of 70
+                    "b_m": 0.8,
+                    "phi": 0.0,
+                    "k_total": 10, # A moderate switching rate
+                    # A large lag that will have a very clear impact on speed
+                    "switching_lag_duration":10,
+                },
+                # These are the parameters for the tracker itself
+                "tracker_params": {
+                    "max_cycles": 10,
+                    "convergence_window_cycles": 3,
+                    "convergence_threshold": 0.01,
+                }
             }
-        }
+        },
     },
-},
 
     "debug_transient_state_viz": {
         "campaign_id": "debug_transient_state_viz",

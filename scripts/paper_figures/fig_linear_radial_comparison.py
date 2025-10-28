@@ -65,7 +65,7 @@ TRAJ_DIR_RAD = DATA_DIR_RAD / "trajectories"
 # Figure Path
 FIG_DIR = PROJECT_ROOT / "figures"
 FIG_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_FILENAME = f"figure_2_linear_radial_comparison"
+OUTPUT_FILENAME = f"fig_linear_radial_comparison.png"
 
 # --- Color Palette ---
 COLOR_EMP_MEAN = '#0072B2'      # Blue (Lattice Sim Mean)

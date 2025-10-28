@@ -41,7 +41,7 @@ def find_nearest(array: np.ndarray, value: float) -> float:
 
 def main():
     # 1. --- Configuration and Data Loading ---
-    campaign_id = EXPERIMENTS["lag_vs_selection_definitive"]["campaign_id"]
+    campaign_id = EXPERIMENTS["lag_vs_environment_scan"]["campaign_id"]
     print(f"Loading data from definitive campaign: '{campaign_id}'")
     df_raw = load_aggregated_data(campaign_id, PROJECT_ROOT)
 
@@ -50,7 +50,7 @@ def main():
 
     figure_dir = PROJECT_ROOT / "figures"
     figure_dir.mkdir(exist_ok=True)
-    output_path = figure_dir / "fig_transient_lag_analysis_final_2panel.pdf"
+    output_path = figure_dir / "fig_switching_lag.pdf"
 
     # 2. --- Data Filtering and Preparation ---
     df_converged = df_raw[df_raw["termination_reason"] == "converged"].copy()
@@ -58,26 +58,35 @@ def main():
 
     env_for_plots = "symmetric_refuge_60w"
     b_m_all = np.sort(df_analysis_base["b_m"].unique())
-    b_m_for_panels = find_nearest(b_m_all, 0.50)
 
-    # Data for both panels will be based on this b_m value
-    df_base_for_panels = df_analysis_base[
+    # --- Data for Panel A ---
+    # Panel A shows the landscape for a single b_m value
+    b_m_for_panel_A = find_nearest(b_m_all, 0.50)
+    df_panel_A_data = df_analysis_base[
         (df_analysis_base["env_definition"] == env_for_plots) &
-        np.isclose(df_analysis_base["b_m"], b_m_for_panels)
+        np.isclose(df_analysis_base["b_m"], b_m_for_panel_A)
     ].copy()
     
-    # --- MODIFICATION: Prepare data specifically for the new Panel B ---
-    # Select three representative, fixed switching rates to plot as lines
-    k_all = np.sort(df_base_for_panels["k_total"].unique())
-    k_vals_for_lines = [
-        find_nearest(k_all, 0.1),
-        find_nearest(k_all, 1.0),
-        find_nearest(k_all, 10.0),
-    ]
-    # Filter the main data to get only the rows corresponding to these k values
-    df_panel_b_data = df_base_for_panels[
-        df_base_for_panels["k_total"].isin(k_vals_for_lines)
+    # --- Data for Panel B ---
+    # Panel B shows max fitness vs. lag for *different* b_m values.
+    # We must start from the base data *before* filtering by b_m.
+    df_panel_B_base = df_analysis_base[
+        (df_analysis_base["env_definition"] == env_for_plots)
     ].copy()
+
+    # Select the b_m values shown in the target legend
+    b_m_vals_for_lines = [find_nearest(b_m_all, v) for v in [0.20, 0.50, 0.70, 0.90, 1.00]]
+    
+    # Filter for only these b_m values
+    df_panel_B_filtered = df_panel_B_base[
+        df_panel_B_base["b_m"].isin(b_m_vals_for_lines)
+    ].copy()
+
+    # For each (b_m, switching_lag_duration) pair, find the MAX fitness
+    # (this implicitly finds the optimal k_total for that point)
+    df_panel_B_data = df_panel_B_filtered.groupby(
+        ["b_m", "switching_lag_duration"]
+    )["avg_front_speed"].max().reset_index()
 
 
     # 3. --- Plotting ---
@@ -95,17 +104,18 @@ def main():
 
     fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.8))
 
-    # --- Panel A: Fitness Landscape (Unchanged) ---
+    # --- Panel A: Fitness Landscape (Unchanged logic) ---
     axA = axes[0]
-    if not df_base_for_panels.empty:
-        pivot_data = df_base_for_panels.pivot_table(
+    if not df_panel_A_data.empty:
+        pivot_data = df_panel_A_data.pivot_table(
             index="switching_lag_duration", columns="k_total", values="avg_front_speed"
         ).sort_index(ascending=False)
 
         sns.heatmap(
-            pivot_data, ax=axA, cmap="RdBu_r",
+            pivot_data, ax=axA, cmap="RdBu",
             cbar_kws={'label': 'Mean Population Fitness'},
-            linewidths=0.5, linecolor='white'
+            # Set vmin/vmax to match target image if needed, e.g., vmin=0.0, vmax=1.5
+            linewidths=0.0 # Target image doesn't seem to have white grid lines
         )
 
         x_vals = pivot_data.columns
@@ -120,38 +130,50 @@ def main():
         axA.set_yticks(y_tick_indices + 0.5)
         axA.set_yticklabels([f"$10^{{{int(np.log10(v))}}}$" for v in y_ticks_to_show], rotation=0)
 
-        axA.set_title(f"(A) Fitness Landscape ($b_m$={b_m_for_panels:.2f})")
+        axA.set_title(f"(A) Fitness Landscape ($b_m$={b_m_for_panel_A:.2f})")
         axA.set_xlabel("Switching Rate ($k_{\mathrm{total}}$)")
         axA.set_ylabel("Switching Lag Duration ($\\tau$)")
     else:
         axA.text(0.5, 0.5, "No data for Panel A", ha='center', va='center')
 
-    # --- MODIFICATION: Panel B now shows fitness vs lag for fixed k rates ---
+    # --- Panel B: Cost of Lag vs. b_m (REVISED LOGIC) ---
     axB = axes[1]
-    k_palette = sns.color_palette("viridis", n_colors=len(k_vals_for_lines))
+    # Use a palette that matches the target (dark-purple -> yellow), like 'magma'
+    b_m_palette = sns.color_palette("magma", n_colors=len(b_m_vals_for_lines))
     
     sns.lineplot(
-        data=df_panel_b_data,
+        data=df_panel_B_data,
         x="switching_lag_duration",
         y="avg_front_speed",
-        hue="k_total",
-        hue_order=k_vals_for_lines, # Ensures legend order matches palette
-        palette=k_palette,
+        hue="b_m",  # Hue is now b_m
+        hue_order=b_m_vals_for_lines, # Ensures legend order
+        palette=b_m_palette,          # Use new palette
         marker='o',
         ms=4,
         lw=1.5,
         ax=axB,
     )
     axB.set(xscale='log', yscale='linear')
-    axB.set_title("(B) Cost of Lag at Fixed Switching Rates")
+    # Update title to match target
+    axB.set_title("(B) Lag Imposes a Hard Fitness Cost")
     axB.set_xlabel("Switching Lag Duration ($\\tau$)")
-    axB.set_ylabel("Mean Fitness")
+    # Update y-axis label to match target
+    axB.set_ylabel("Mean Population Fitness")
+    
+    # Update legend to match target
+    handles, labels = axB.get_legend_handles_labels()
     axB.legend(
-        title="Switching Rate ($k$)", loc='lower left', frameon=False,
+        handles=handles,
+        labels=[f"{float(l):.2f}" for l in labels], # Format labels as 0.20, 0.50 etc.
+        title="Fitness Cost ($b_m$)", 
+        loc='lower left', 
+        frameon=False,
     )
-    axB.grid(True, which='major')
+    axB.grid(True, which='major', axis='y') # Target plot only has y-grid
+    sns.despine(ax=axB) # Remove top and right spines to match target
+    sns.despine(ax=axA) # Do the same for Panel A
 
-    fig.subplots_adjust(wspace=0.3)
+    fig.subplots_adjust(wspace=0.35) # Adjust spacing
 
     # 4. --- Save the Final Figure ---
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
