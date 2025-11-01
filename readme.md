@@ -3,7 +3,7 @@
 **Authors:** Vedant Sharma and Hao Wang
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Preprint](https://img.shields.io/badge/Preprint-bioRxiv-blue.svg)](doi.org/10.1101/2025.10.27.684987) 
+[![Preprint](https://img.shields.io/badge/Preprint-bioRxiv-blue.svg)](https://doi.org/10.1101/2025.10.27.684987) 
 
 This repository contains the full source code for the large-scale agent-based model (ABM) and analysis scripts used in our manuscript. This work investigates how phenotypic switching strategies determine fitness at the expanding front of a population in a heterogeneous environment.
 
