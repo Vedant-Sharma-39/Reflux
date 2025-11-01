@@ -21,6 +21,7 @@ class GillespieTransientStateSimulation(GillespieSimulation):
     def __init__(self, **params):
         self.switching_lag_duration = params.get("switching_lag_duration", 0.0)
         self.delayed_events = []
+        self.event_counter = 0  # To maintain event order in the priority queue
         super().__init__(**params)
 
         if self.plotter:
@@ -53,13 +54,15 @@ class GillespieTransientStateSimulation(GillespieSimulation):
 
             self.population[parent] = transient_state
             completion_time = self.time + self.switching_lag_duration
-            heapq.heappush(self.delayed_events, (completion_time, parent, final_type))
+            self.event_counter += 1
+            event_tuple = (completion_time, self.event_counter, parent, final_type)
+            heapq.heappush(self.delayed_events, event_tuple)
             self._update_cell_and_neighbors(parent)
         else:
             super()._execute_event(event_type, parent, target)
 
     def _complete_delayed_event(self):
-        completion_time, cell, final_type = heapq.heappop(self.delayed_events)
+        completion_time, _, cell, final_type = heapq.heappop(self.delayed_events)
         self.time = completion_time
 
         current_type = self.population.get(cell)
@@ -78,7 +81,7 @@ class GillespieTransientStateSimulation(GillespieSimulation):
         """
         A robust step method that correctly handles both stochastic and deterministic
         events using the Next Reaction Method. It processes exactly one event per call,
-        advancing the clock to the time of the earliest possible event.
+        advancing the clock tod the time of the earliest possible event.
         """
         if self.step_count > 0 and self.step_count % self.cache_prune_step_interval == 0:
             self._prune_neighbor_cache()

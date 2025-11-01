@@ -8,20 +8,28 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+import matplotlib # Added for publication settings
+
+# --- Publication Settings ---
+matplotlib.rcParams["pdf.fonttype"] = 42
+matplotlib.rcParams["ps.fonttype"] = 42
+matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["font.sans-serif"] = ["Helvetica", "Arial"] # Use common sans-serif fonts
 
 # ---- Display knobs ----
 SMOOTHING_MODE = "ema"   # {"off","ema","ma"}
 EMA_ALPHA      = 0.25
 MA_WINDOW      = 7
 DROP_LAST_N    = 2       # drop last N points per curve (avoid end-step wiggles)
-SAVE_FIG_NAME  = "debug_aif_online_only_with_full_colony.png"
+# --- CHANGE: Update output filename and format ---
+SAVE_FIG_NAME  = "fig_aif_sector_trajectories_and_colony.pdf" # Changed to PDF for vector graphics
 # -----------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.model_aif import AifModelSimulation, Resistant
+from src.core.model_aif import AifModelSimulation, Resistant, Susceptible # Added Susceptible
 from src.utils.analysis_helpers import load_population_data
 
 CUBE_DIRS = [(1,-1,0),(1,0,-1),(0,1,-1),(-1,1,0),(-1,0,1),(0,-1,1)]
@@ -71,7 +79,7 @@ def smooth_series(df: pd.DataFrame, xcol: str, ycol: str, mode: str) -> pd.DataF
         return g
 
 def main():
-    print("--- AIF Sector Width: ONLINE only + full-colony view (red cells highlighted) ---")
+    print("--- Generating AIF Sector Trajectory Figure ---") # Changed title
 
     # 1) simulate
     print("\n[1/3] Running simulation...")
@@ -88,7 +96,7 @@ def main():
         "max_steps": 250_000,
 
         "b_sus": 1.0,
-        "b_res": 0.97,
+        "b_res": 0.97, # Set specific parameter for plot titles
         "b_comp": 1.0,
         "k_res_comp": 0.0,
 
@@ -104,7 +112,7 @@ def main():
         "death_hysteresis": 3,
     }
 
-    output_dir = PROJECT_ROOT / "figures" / "debug_runs"
+    output_dir = PROJECT_ROOT / "figures" / "debug_runs" # Keep debug output separate
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_pop_file = output_dir / "aif_streaks_for_debug.json.gz"
 
@@ -138,71 +146,117 @@ def main():
         print("Warning: no in-run sector logs found.")
         return
 
-    # backward-compat guard (if an older model without root_sid is used)
     if "root_sid" not in df_all.columns:
         df_all["root_sid"] = df_all["sid"]
 
-    # survivors by **max radius** snapshot, using root_sid
     max_r = float(df_all["radius"].max())
     df_last = df_all[np.abs(df_all["radius"] - max_r) < 1e-9]
     survivor_roots = set(df_last.loc[df_last["type"] == Resistant, "root_sid"].astype(int).tolist())
 
-    # keep only Resistant rows from survivor root lineages
     df_series = df_all[
         (df_all["type"] == Resistant) &
         (df_all["root_sid"].isin(survivor_roots))
     ][["root_sid","radius","width_cells"]].rename(columns={"root_sid":"sid"})
 
-    # optional last-N drop to avoid tail wiggles
     def drop_tail(g):
         if DROP_LAST_N > 0 and len(g) > DROP_LAST_N:
             return g.iloc[:-DROP_LAST_N, :]
         return g
 
-    # parity sanity
     df_pop["is_front"] = compute_front_mask(df_pop)
     final_red_front = int(((df_pop["is_front"] == True) & (df_pop["type"] == Resistant)).sum())
     online_final_sum = int(df_last[df_last["type"] == Resistant]["width_cells"].sum())
-    print(f"[sanity] final online sum (red widths): {online_final_sum} | "
-          f"final lattice red front cells: {final_red_front}")
+    print(f"[Sanity Check] Final Online Sum (Resistant Widths): {online_final_sum} | "
+          f"Final Lattice Resistant Front Cells: {final_red_front}")
 
     # 3) plot
-    print("\n[3/3] Plotting...")
-    sns.set_theme(style="whitegrid", context="talk")
-    fig, (axA, axB) = plt.subplots(1, 2, figsize=(22, 10), gridspec_kw={"width_ratios":[1.05, 1.25]})
-    fig.suptitle("Sector width vs radius — survivors only (online, root_sid) + full-colony view of red cells", y=0.98)
+    print("\n[3/3] Plotting for publication...")
+    # --- CHANGE: Set theme for publication ---
+    sns.set_theme(style="ticks", context="paper") # Use 'paper' context for smaller fonts/elements
+    fig, (axA, axB) = plt.subplots(
+        1, 2,
+        figsize=(10, 5), # Adjusted size for a standard paper width
+        gridspec_kw={"width_ratios":[0.8, 1.0]}, # Give slightly more space to panel B
+        constrained_layout=True # Use constrained layout for better spacing
+    )
+    # --- REMOVED: fig.suptitle removed for typical publication style ---
 
-    # A: full colony
-    df_red  = df_pop[df_pop["type"] == Resistant]
-    df_grey = df_pop[df_pop["type"] != Resistant]
-    axA.scatter(df_grey["x"], df_grey["y"], s=1, c="#bfc5ca", alpha=0.6, linewidths=0)
-    axA.scatter(df_red["x"],  df_red["y"],  s=3, c="#e63946", alpha=0.9, linewidths=0)
+    # --- Panel A: Full colony visualization ---
+    # Define colors explicitly for publication
+    COLOR_SUSCEPTIBLE = "#bfc5ca" # Light grey
+    COLOR_RESISTANT = "#e63946"   # Red
+
+    df_res = df_pop[df_pop["type"] == Resistant]
+    df_sus = df_pop[df_pop["type"] == Susceptible] # Assuming type 1 is Susceptible
+    axA.scatter(df_sus["x"], df_sus["y"], s=0.5, c=COLOR_SUSCEPTIBLE, alpha=0.6, linewidths=0, rasterized=True) # Rasterize for smaller file size in PDF
+    axA.scatter(df_res["x"],  df_res["y"],  s=1.5, c=COLOR_RESISTANT, alpha=0.9, linewidths=0, rasterized=True)
     axA.set_aspect("equal", "box")
-    axA.set_title("Full colony (final lattice): red cells highlighted")
-    axA.set_xlabel("x"); axA.set_ylabel("y")
+    # --- CHANGE: Improved Panel A title and labels ---
+    axA.set_title("(A) Final Colony State", fontsize=12, weight='bold')
+    axA.set_xlabel("Spatial Coordinate X", fontsize=10)
+    axA.set_ylabel("Spatial Coordinate Y", fontsize=10)
+    axA.tick_params(axis='both', which='major', labelsize=8) # Smaller tick labels
+    axA.tick_params(left=False, right=False , labelleft=False ,
+                    labelbottom=False, bottom=False) # Hide ticks and labels for cleaner look
 
-    # B: survivor series grouped by root_sid
-    for sid, g in df_series.groupby("sid"):
+    # --- Panel B: Survivor Trajectories ---
+    num_survivors = df_series['sid'].nunique()
+    # --- CHANGE: Use a perceptually uniform colormap ---
+    palette = sns.color_palette("viridis", n_colors=num_survivors)
+
+    # Plot raw data faintly first
+    for i, (sid, g) in enumerate(df_series.groupby("sid")):
         g = g.sort_values("radius")
         g = drop_tail(g)
-        (ln,) = axB.plot(g["radius"], g["width_cells"], linewidth=1.5, alpha=0.35, label=f"sid {sid} (raw)")
-        color = ln.get_color()
+        axB.plot(g["radius"], g["width_cells"], linewidth=1.0, alpha=0.25, color=palette[i])
+
+    # Plot smoothed data more prominently
+    plotted_sids = [] # Keep track to avoid duplicate labels
+    for i, (sid, g) in enumerate(df_series.groupby("sid")):
+        g = g.sort_values("radius")
+        g = drop_tail(g)
         if SMOOTHING_MODE != "off":
             g_s = smooth_series(g, "radius", "width_cells", SMOOTHING_MODE)
-            axB.plot(g_s["radius"], g_s["width_cells"], linewidth=2.4, color=color, label=f"sid {sid} ({SMOOTHING_MODE})")
+            # Only add label once per sid
+            label = f"Lineage {sid}" if sid not in plotted_sids else None
+            axB.plot(g_s["radius"], g_s["width_cells"], linewidth=1.8, color=palette[i], label=label)
+            if label: plotted_sids.append(sid)
 
-    axB.set_xlabel("Radius")
-    axB.set_ylabel("Sector Width on Front (cells)")
-    ttl = "" if SMOOTHING_MODE == "off" else f" (smoothed: {SMOOTHING_MODE})"
-    axB.set_title(f"Survivor red sectors — Online widths{ttl}")
-    axB.grid(True, which="both", linestyle=":")
-    axB.legend(ncol=2, fontsize=10)
+    # --- CHANGE: Improved Panel B title and labels ---
+    axB.set_xlabel("Colony Radius ($r$)", fontsize=10)
+    axB.set_ylabel("Sector Width ($W$, cell count)", fontsize=10)
+    smoothing_label = ""
+    if SMOOTHING_MODE == "ema":
+        smoothing_label = f" (EMA smoothed, $\\alpha={EMA_ALPHA}$)"
+    elif SMOOTHING_MODE == "ma":
+         smoothing_label = f" (MA smoothed, window={MA_WINDOW})"
+    axB.set_title(f"(B) Resistant Sector Trajectories{smoothing_label}", fontsize=12, weight='bold')
 
-    out_img = output_dir / SAVE_FIG_NAME
-    plt.savefig(out_img, dpi=300, bbox_inches="tight")
-    print(f"\n✅ Figure saved to: {out_img}")
-    plt.show()
+    axB.grid(True, which="major", linestyle=":", linewidth=0.5, color='grey') # Make grid lighter
+    axB.tick_params(axis='both', which='major', labelsize=8) # Smaller tick labels
+    axB.set_xlim(left=params["initial_droplet_radius"]*0.95) # Start x-axis near initial radius
+    axB.set_ylim(bottom=0) # Start y-axis at 0
 
+    # --- CHANGE: Improved legend ---
+    if plotted_sids: # Only show legend if smoothed lines were plotted
+        handles, labels = axB.get_legend_handles_labels()
+        # Keep legend small and potentially outside if many lines
+        if num_survivors <= 10:
+             axB.legend(handles=handles, labels=labels, loc='upper left', fontsize=8, title="Survivor Lineage ID", title_fontsize=9)
+        else:
+             # For many lines, place legend outside
+             axB.legend(handles=handles, labels=labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, title="Survivor Lineage ID", title_fontsize=9)
+
+    sns.despine(fig=fig) # Remove top and right spines
+
+    # --- CHANGE: Save to final figures directory, not debug ---
+    final_figure_dir = PROJECT_ROOT / "figures"
+    final_figure_dir.mkdir(parents=True, exist_ok=True)
+    out_path = final_figure_dir / SAVE_FIG_NAME
+
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    print(f"\n✅ figure saved to: {out_path}")
+    # plt.show() # Keep commented out for automated runs
 
 if __name__ == "__main__":
     main()

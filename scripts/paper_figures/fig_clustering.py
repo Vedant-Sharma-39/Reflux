@@ -4,11 +4,8 @@ Main Figure: Absolute vs. Relative Benefit of Clustering for Disadvantaged Mutan
 This script analyzes the 'deleterious_invasion_dynamics' experiment to create a
 comprehensive two-panel figure.
 
-- Panel A shows the absolute invasion depth, demonstrating that weaker negative
-  selection allows mutants to persist longer.
-- Panel B shows the relative invasion depth (normalized by the most fragmented
-  state), revealing the key insight: the survival boost from clustering is most
-  pronounced for the most disadvantaged mutants.
+v2: Updated to full publication-ready quality with LaTeX fonts,
+    larger text, and improved spacing.
 """
 
 import sys
@@ -22,6 +19,11 @@ import matplotlib
 # --- Publication Settings ---
 matplotlib.rcParams["pdf.fonttype"] = 42
 matplotlib.rcParams["ps.fonttype"] = 42
+matplotlib.rcParams["text.usetex"] = True
+matplotlib.rcParams["text.latex.preamble"] = r"\usepackage{amsmath}"
+matplotlib.rcParams["font.family"] = "serif"
+matplotlib.rcParams["font.size"] = 12 # Base font size
+# --- End Publication Settings ---
 
 
 def cm_to_inch(cm):
@@ -33,13 +35,13 @@ def cm_to_inch(cm):
 
 def get_project_root() -> Path:
     """Dynamically finds the project root directory."""
-    return Path(__file__).resolve().parents[2]
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    return project_root
 
 
 PROJECT_ROOT = get_project_root()
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from src.config import EXPERIMENTS
 from src.io.data_loader import load_aggregated_data
 
@@ -54,8 +56,10 @@ def main():
 
     figure_dir = PROJECT_ROOT / "figures"
     figure_dir.mkdir(exist_ok=True)
+    
+    # --- Updated Output Paths ---
     output_path_pdf = figure_dir / "fig_clustering.pdf"
-    output_path_eps = figure_dir / "fig_clustering.eps"
+    output_path_png = figure_dir / "fig_clustering.png"
 
     # --- Data Processing ---
     unique_sizes = sorted(df_full["initial_mutant_patch_size"].unique())
@@ -102,23 +106,19 @@ def main():
     )
 
     # --- Plotting Setup ---
-    sns.set_theme(
-        context="paper",
-        style="ticks",
-        rc={
-            "font.size": 8,
-            "axes.titlesize": 10,
-            "axes.labelsize": 9,
-            "xtick.labelsize": 8,
-            "ytick.labelsize": 8,
-            "legend.fontsize": 8,
-            "legend.title_fontsize": 9,
-            "axes.edgecolor": "black",
-            "grid.linestyle": ":",
-        },
-    )
+    
+    # --- Standardized Font Definitions ---
+    title_font = {'fontsize': 14, 'fontweight': 'bold'}
+    label_font = {'fontsize': 13}
+    tick_font_size = 12
+    legend_font_size = 11
+
+    sns.set_theme(context="paper", style="ticks")
+    
     fig, axes = plt.subplots(
-        1, 2, figsize=(cm_to_inch(17.8), cm_to_inch(8)), constrained_layout=True
+        1, 2, 
+        figsize=(cm_to_inch(17.8), cm_to_inch(8.5)), # Standard 1x2 size
+        constrained_layout=True # Fixes cramping
     )
     ax1, ax2 = axes
 
@@ -132,13 +132,17 @@ def main():
         hue="b_m",
         palette=palette,
         marker="o",
-        lw=2,
-        ms=5,
+        lw=2.5,
+        ms=6,
+        mfc='white', # White marker fill
+        mec='black', # Black marker edge
+        mew=0.7,   # Marker edge width
         ax=ax1,
         legend=False,
     )
-    ax1.set_title("(A) Absolute Invasion Depth")
-    ax1.set_ylabel("Mean Peak Mutant Fraction ($\langle q_{max} \\rangle$)")
+    # --- Use LaTeX and Standard Fonts ---
+    ax1.set_title(r"(A) Absolute Invasion Depth", **title_font)
+    ax1.set_ylabel(r"Mean Peak Mutant Fraction ($\langle q_{\max} \rangle$)", **label_font)
 
     # --- Panel B: Relative Benefit of Clustering ---
     sns.lineplot(
@@ -148,30 +152,40 @@ def main():
         hue="b_m",
         palette=palette,
         marker="o",
-        lw=2,
+        lw=2.5,
         ms=6,
+        mfc='white',
+        mec='black',
+        mew=0.7,
         ax=ax2,
         legend=True,
     )
-    ax2.set_title("(B) Relative Benefit of Clustering")
-    ax2.set_ylabel("Relative Invasion Depth")
+    # --- Use LaTeX and Standard Fonts ---
+    ax2.set_title(r"(B) Relative Benefit of Clustering", **title_font)
+    ax2.set_ylabel(r"Relative Invasion Depth", **label_font)
     ax2.axhline(1.0, color="grey", linestyle="--", lw=1.5)
 
     # --- Shared Axis Properties and Legend ---
     for ax in axes:
-        ax.set_xlabel("Mean Initial Cluster Size")
+        ax.set_xlabel(r"Mean Initial Cluster Size", **label_font)
         ax.set_xscale("log")
-        ax.grid(True, which="major", ls=":", axis="x")
+        ax.grid(True, which="both", ls=":", alpha=0.4) # Lighter grid
+        ax.tick_params(axis="both", which='major', labelsize=tick_font_size)
 
-    # Improve and place the legend inside Panel B
+    # --- Improve and place the legend ---
     leg = ax2.get_legend()
-    leg.set_title("Selection Strength ($b_m$)")
+    leg.set_title(r"Selection Strength ($b_m$)")
     leg.set_loc("upper left")
+    leg.set_frame_on(False) # Cleaner look
+    plt.setp(leg.get_title(), fontsize=legend_font_size)
+    plt.setp(leg.get_texts(), fontsize=legend_font_size)
+
+    sns.despine(fig) # Remove top/right spines
 
     # --- Save Final Figure ---
-    plt.savefig(output_path_pdf, bbox_inches="tight")
-    plt.savefig(output_path_eps, bbox_inches="tight")
-    print(f"\nFigure saved to: {output_path_pdf} and {output_path_eps}")
+    plt.savefig(output_path_pdf, bbox_inches="tight", dpi=600)
+    plt.savefig(output_path_png, bbox_inches="tight", dpi=600)
+    print(f"\nFigure saved to:\n  {output_path_pdf}\n  {output_path_png}")
     plt.close(fig)
 
 

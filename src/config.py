@@ -212,7 +212,7 @@ EXPERIMENTS = {
     "lag_vs_environment_scan": {
         "campaign_id": "lag_vs_environment_scan",
         "run_mode": "bet_hedging_converged",
-        "hpc_params": {"time": "04:00:00", "mem": "2G", "sims_per_task": 50},
+        "hpc_params": {"time": "04:00:00", "mem": "2G", "sims_per_task": 5},
         "sim_sets": {
             "main_scan": {
                 "base_params": {
